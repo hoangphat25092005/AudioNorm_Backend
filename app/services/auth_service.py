@@ -1,4 +1,7 @@
-from app.models.user import User, UserRegister, UserLogin, UserResponse
+from app.models.user import (
+    User, UserRegister, UserLogin, UserResponse,
+    GoogleUser, AuthProvider
+)
 from app.config.database import get_db
 from fastapi import HTTPException
 from passlib.context import CryptContext
@@ -103,5 +106,55 @@ class AuthService:
                 username=user.username,
                 email=user.email,
                 created_at=user.created_at
+            )
+        }
+
+    @staticmethod
+    async def google_auth(google_user: GoogleUser) -> dict:
+        """Handle Google authentication"""
+        db = await get_db()
+        
+        # Check if user exists
+        user_dict = await db.users.find_one({"email": google_user.email})
+        
+        if not user_dict:
+            # Create new user
+            user = User(
+                username=google_user.name,
+                email=google_user.email,
+                auth_provider=AuthProvider.GOOGLE,
+                google_id=google_user.id,
+                profile_picture=google_user.picture
+            )
+            await db.users.insert_one(user.dict())
+        else:
+            # Update existing user
+            user = User(**user_dict)
+            if user.auth_provider != AuthProvider.GOOGLE:
+                # Link Google account to existing user
+                await db.users.update_one(
+                    {"email": user.email},
+                    {"$set": {
+                        "auth_provider": AuthProvider.GOOGLE,
+                        "google_id": google_user.id,
+                        "profile_picture": google_user.picture
+                    }}
+                )
+
+        # Create access token
+        access_token = AuthService.create_access_token(
+            data={"sub": google_user.email}
+        )
+
+        # Return token and user data
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": UserResponse(
+                username=google_user.name,
+                email=google_user.email,
+                created_at=datetime.utcnow(),
+                profile_picture=google_user.picture,
+                auth_provider=AuthProvider.GOOGLE
             )
         }
