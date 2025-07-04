@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.config.database import init_db, close_db
-from app.controllers import auth_controller, feedback_controller
+from app.controllers import auth_controller, feedback_controller, user_controller
 
 app = FastAPI(
     title="AudioNorm API",
@@ -39,6 +39,7 @@ async def shutdown_event():
 # Include routers
 app.include_router(auth_controller.router, prefix="/auth", tags=["Authentication"])
 app.include_router(feedback_controller.router, prefix="/feedback", tags=["Feedback"])
+app.include_router(user_controller.router, prefix="/users", tags=["Users"])
 
 @app.get("/", tags=["Root"])
 async def root():

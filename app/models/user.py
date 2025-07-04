@@ -43,4 +43,4 @@ class UserResponse(BaseModel):
     email: EmailStr
     created_at: datetime
     profile_picture: Optional[HttpUrl] = None
-    auth_provider: AuthProvider
+    auth_provider: AuthProvider = AuthProvider.LOCAL 

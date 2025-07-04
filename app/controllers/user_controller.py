@@ -14,7 +14,7 @@ async def get_user(user_id: str):
         _id=str(user.id),
         email=user.email,
         username=user.username,
-        full_name=user.full_name,
-        is_active=user.is_active,
+        profile_picture=user.profile_picture,
+        auth_provider=user.auth_provider,
         created_at=user.created_at
     )

@@ -105,7 +105,8 @@ class AuthService:
             "user": UserResponse(
                 username=user.username,
                 email=user.email,
-                created_at=user.created_at
+                created_at=user.created_at,
+                auth_provider=user.auth_provider
             )
         }
 

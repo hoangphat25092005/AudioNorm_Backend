@@ -1,4 +1,4 @@
-from app.models.user import UserCreate, UserInDB
+from app.models.user import UserRegister, UserResponse
 from app.config.database import get_db
 from passlib.context import CryptContext
 from bson import ObjectId
@@ -15,7 +15,7 @@ class UserService:
         return pwd_context.verify(plain_password, hashed_password)
 
     @staticmethod
-    async def create_user(user: UserCreate) -> UserInDB:
+    async def create_user(user: UserRegister) -> UserResponse:
         db = await get_db()
         
         # Check if user already exists
@@ -34,20 +34,20 @@ class UserService:
         
         # Fetch and return created user
         created_user = await db.users.find_one({"_id": result.inserted_id})
-        return UserInDB(**created_user)
+        return UserResponse(**created_user)
 
     @staticmethod
-    async def get_user_by_id(user_id: str) -> UserInDB:
+    async def get_user_by_id(user_id: str) -> UserResponse:
         db = await get_db()
         user = await db.users.find_one({"_id": ObjectId(user_id)})
         if user:
-            return UserInDB(**user)
+            return UserResponse(**user)
         return None
 
     @staticmethod
-    async def get_user_by_email(email: str) -> UserInDB:
+    async def get_user_by_email(email: str) ->  UserResponse:
         db = await get_db()
         user = await db.users.find_one({"email": email})
         if user:
-            return UserInDB(**user)
+            return UserResponse(**user)
         return None
