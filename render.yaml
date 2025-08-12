@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: audionorm-backend
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: PORT
+        value: 8000
+      - key: MONGO_URI
+        sync: false  # Set this in Render dashboard
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ALGORITHM
+        value: HS256
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: 30
+      - key: client_id
+        sync: false  # Set this in Render dashboard for Google OAuth
+      - key: client_secret
+        sync: false  # Set this in Render dashboard for Google OAuth
+      - key: authorised_origins
+        value: https://audionorm-backend.onrender.com
+      - key: authorised_redirect
+        value: https://audionorm-backend.onrender.com/auth/google/callback
+      - key: MAIL_USERNAME
+        sync: false  # Optional - Set in Render dashboard
+      - key: MAIL_PASSWORD
+        sync: false  # Optional - Set in Render dashboard
+      - key: MAIL_SERVER
+        value: smtp.gmail.com
+      - key: MAIL_PORT
+        value: 587
+      - key: MAIL_FROM_NAME
+        value: AudioNorm Platform
