@@ -12,13 +12,26 @@ db = None
 async def init_db():
     global client, db
     if client is None:
-        client = AsyncIOMotorClient(MONGODB_URL, server_api=ServerApi('1'))
-        db = client.audionorm
         try:
+            if not MONGODB_URL:
+                raise ValueError("MONGODB_URL or MONGO_URI environment variable is required")
+            
+            client = AsyncIOMotorClient(MONGODB_URL, server_api=ServerApi('1'))
+            db = client.audionorm
+            
+            # Test the connection
             await client.admin.command('ping')
             print("Successfully connected to MongoDB!")
         except Exception as e:
             print(f"Unable to connect to MongoDB: {e}")
+            # Clean up on failure
+            if client is not None:
+                try:
+                    await client.close()
+                except:
+                    pass
+                client = None
+                db = None
             raise
 
 async def get_db():
@@ -27,7 +40,13 @@ async def get_db():
     return db
 
 async def close_db():
-    global client
+    global client, db
     if client is not None:
-        await client.close()
-        client = None
+        try:
+            await client.close()
+            print("Successfully disconnected from MongoDB!")
+        except Exception as e:
+            print(f"Error closing MongoDB connection: {e}")
+        finally:
+            client = None
+            db = None
