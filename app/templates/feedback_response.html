@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>New Response to Your Feedback - AudioNorm</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background-color: #28a745; color: white; padding: 20px; text-align: center; }
+        .content { padding: 20px; background-color: #f9f9f9; }
+        .footer { padding: 10px; text-align: center; color: #666; font-size: 12px; }
+        .feedback-box { background: white; padding: 15px; border-left: 4px solid #007bff; margin: 10px 0; }
+        .response-box { background: #e8f5e8; padding: 15px; border-left: 4px solid #28a745; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>New Response to Your Feedback</h1>
+        </div>
+        <div class="content">
+            <h2>Hello {{ feedback_author_name }},</h2>
+            <p>{{ responder_name }} has responded to your feedback on AudioNorm.</p>
+            
+            <h3>Your original feedback:</h3>
+            <div class="feedback-box">
+                {{ feedback_title }}
+            </div>
+            
+            <h3>Response from {{ responder_name }}:</h3>
+            <div class="response-box">
+                {{ response_content }}
+            </div>
+            
+            <p>You can view the full conversation and respond back by visiting our platform.</p>
+            
+            <p>Thank you for being part of the AudioNorm community!</p>
+        </div>
+        <div class="footer">
+            <p>&copy; 2025 AudioNorm. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>

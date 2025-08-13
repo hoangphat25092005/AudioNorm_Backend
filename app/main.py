@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.config.database import init_db, close_db
-from app.controllers import auth_controller, feedback_controller, user_controller
+from app.controllers import auth_controller, feedback_controller, user_controller, audio_controller
 import os
 
 app = FastAPI(
@@ -18,7 +18,7 @@ allowed_origins = [
     "http://localhost:3000",  # React development
     "http://localhost:8000",  # Local FastAPI
     "https://audionorm-backend.onrender.com",  # Production backend
-    "https://your-frontend-domain.com",  # Replace with your frontend domain
+    "https://audionorm-frontend.onrender.com",  # Your frontend on Render
 ]
 
 # In production, be more restrictive with CORS
@@ -61,6 +61,7 @@ async def shutdown_event():
 app.include_router(auth_controller.router, prefix="/auth", tags=["Authentication"])
 app.include_router(feedback_controller.router, prefix="/feedback", tags=["Feedback"])
 app.include_router(user_controller.router, prefix="/users", tags=["Users"])
+app.include_router(audio_controller.router, prefix="/audio", tags=["Audio"])
 
 @app.get("/", tags=["Root"])
 async def root():

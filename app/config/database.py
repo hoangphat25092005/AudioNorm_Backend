@@ -5,7 +5,7 @@ import os
 
 load_dotenv()
 
-MONGODB_URL = os.getenv("MONGODB_URL")
+MONGODB_URL = os.getenv("MONGODB_URL") or os.getenv("MONGO_URI")
 client = None
 db = None
 
@@ -27,5 +27,7 @@ async def get_db():
     return db
 
 async def close_db():
+    global client
     if client is not None:
         await client.close()
+        client = None
