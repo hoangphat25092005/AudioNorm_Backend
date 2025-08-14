@@ -37,16 +37,19 @@ class FeedbackService:
 
         # Send confirmation email to the user
         try:
-            user = await db['users'].find_one({"_id": ObjectId(user_id)})
+            # Validate user_id before converting to ObjectId
+            user_object_id = ObjectId(user_id)
+            user = await db['users'].find_one({"_id": user_object_id})
             if user and user.get('email'):
-                await EmailService.send_feedback_confirmation(
+                email_result = await EmailService.send_feedback_confirmation(
                     user_email=user['email'],
                     username=user.get('username', 'User'),
                     feedback_content=feedback.feedback_text,
                     feedback_id=str(result.inserted_id)
                 )
+                logger.info(f"Email confirmation result: {email_result}")
         except Exception as e:
-            logger.error(f"Failed to send feedback confirmation email: {str(e)}")
+            logger.warning(f"Failed to send feedback confirmation email: {str(e)}")
             # Don't fail feedback submission if email fails
 
         return feedback_dict
@@ -65,7 +68,7 @@ class FeedbackService:
         # Check if feedback exists
         try:
             feedback_obj_id = ObjectId(response.feedback_id)
-        except:
+        except Exception:
             raise HTTPException(status_code=400, detail="Invalid feedback ID")
             
         feedback = await db['feedbacks'].find_one({"_id": feedback_obj_id})
@@ -73,10 +76,18 @@ class FeedbackService:
             raise HTTPException(status_code=404, detail="Feedback not found")
         
         # Get feedback author details
-        feedback_author = await db['users'].find_one({"_id": ObjectId(feedback['user_id'])})
+        try:
+            feedback_user_id = ObjectId(feedback['user_id'])
+            feedback_author = await db['users'].find_one({"_id": feedback_user_id})
+        except Exception:
+            feedback_author = None
         
         # Get response author details
-        response_author = await db['users'].find_one({"_id": ObjectId(user_id)})
+        try:
+            response_user_id = ObjectId(user_id)
+            response_author = await db['users'].find_one({"_id": response_user_id})
+        except Exception:
+            response_author = None
         
         # Create response document
         response_dict = response.dict()
@@ -93,7 +104,7 @@ class FeedbackService:
         try:
             if (feedback_author and 
                 response_author and 
-                feedback_author['_id'] != ObjectId(user_id) and
+                str(feedback_author['_id']) != user_id and
                 feedback_author.get('email')):
                 
                 await EmailService.send_feedback_notification(
@@ -118,15 +129,18 @@ class FeedbackService:
         
         try:
             feedback_obj_id = ObjectId(feedback_id)
-        except:
+        except Exception:
             raise HTTPException(status_code=400, detail="Invalid feedback ID")
         
         # Get feedback with user details
         feedback_pipeline = [
             {"$match": {"_id": feedback_obj_id}},
+            {"$addFields": {
+                "user_object_id": {"$toObjectId": "$user_id"}
+            }},
             {"$lookup": {
                 "from": "users",
-                "localField": "user_id",
+                "localField": "user_object_id",
                 "foreignField": "_id",
                 "as": "user"
             }},
@@ -142,9 +156,12 @@ class FeedbackService:
         # Get responses with user details
         response_pipeline = [
             {"$match": {"feedback_id": feedback_obj_id}},
+            {"$addFields": {
+                "user_object_id": {"$toObjectId": "$user_id"}
+            }},
             {"$lookup": {
                 "from": "users",
-                "localField": "user_id",
+                "localField": "user_object_id",
                 "foreignField": "_id",
                 "as": "user"
             }},
@@ -186,9 +203,12 @@ class FeedbackService:
         
         # Aggregate feedback with user details and response counts
         pipeline = [
+            {"$addFields": {
+                "user_object_id": {"$toObjectId": "$user_id"}
+            }},
             {"$lookup": {
                 "from": "users",
-                "localField": "user_id",
+                "localField": "user_object_id",
                 "foreignField": "_id",
                 "as": "user"
             }},
@@ -227,11 +247,19 @@ class FeedbackService:
         """Get all feedback submitted by a specific user"""
         db = await get_db()
         
+        try:
+            user_object_id = ObjectId(user_id)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid user ID")
+        
         pipeline = [
-            {"$match": {"user_id": ObjectId(user_id)}},
+            {"$match": {"user_id": user_id}},  # Match as string since user_id is stored as string
+            {"$addFields": {
+                "user_object_id": {"$toObjectId": "$user_id"}
+            }},
             {"$lookup": {
                 "from": "users",
-                "localField": "user_id",
+                "localField": "user_object_id",
                 "foreignField": "_id",
                 "as": "user"
             }},

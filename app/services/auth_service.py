@@ -15,7 +15,12 @@ import os
 load_dotenv()
 
 # Password hashing settings
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+try:
+    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+except Exception as e:
+    # Fallback for bcrypt issues
+    print(f"Warning: bcrypt initialization issue: {e}")
+    pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 # JWT settings
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key")  # Use environment variable in production
@@ -66,10 +71,11 @@ class AuthService:
         )
 
         # Save to database
-        await db.users.insert_one(user.dict())
+        result = await db.users.insert_one(user.dict())
 
         # Return user response (without password)
         return UserResponse(
+            _id=str(result.inserted_id),
             username=user.username,
             email=user.email,
             created_at=user.created_at
@@ -95,7 +101,10 @@ class AuthService:
 
         # Create access token
         access_token = AuthService.create_access_token(
-            data={"sub": user.username}
+            data={
+                "sub": user.username,
+                "user_id": str(user_dict["_id"])  # MongoDB ObjectId as string
+            }
         )
 
         # Return token and user data
@@ -103,6 +112,7 @@ class AuthService:
             "access_token": access_token,
             "token_type": "bearer",
             "user": UserResponse(
+                _id=str(user_dict["_id"]),
                 username=user.username,
                 email=user.email,
                 created_at=user.created_at,
@@ -127,10 +137,12 @@ class AuthService:
                 google_id=google_user.id,
                 profile_picture=google_user.picture
             )
-            await db.users.insert_one(user.dict())
+            result = await db.users.insert_one(user.dict())
+            user_id = str(result.inserted_id)
         else:
             # Update existing user
             user = User(**user_dict)
+            user_id = str(user_dict["_id"])
             if user.auth_provider != AuthProvider.GOOGLE:
                 # Link Google account to existing user
                 await db.users.update_one(
@@ -144,7 +156,10 @@ class AuthService:
 
         # Create access token
         access_token = AuthService.create_access_token(
-            data={"sub": google_user.email}
+            data={
+                "sub": google_user.email,
+                "user_id": user_id
+            }
         )
 
         # Return token and user data
@@ -152,6 +167,7 @@ class AuthService:
             "access_token": access_token,
             "token_type": "bearer",
             "user": UserResponse(
+                _id=user_id,
                 username=google_user.name,
                 email=google_user.email,
                 created_at=datetime.utcnow(),

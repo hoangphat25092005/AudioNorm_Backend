@@ -18,6 +18,8 @@ services:
         value: HS256
       - key: ACCESS_TOKEN_EXPIRE_MINUTES
         value: 30
+      - key: FRONTEND_URL
+        sync: false  # Set this in Render dashboard to your frontend URL
       - key: client_id
         sync: false  # Set this in Render dashboard for Google OAuth
       - key: client_secret

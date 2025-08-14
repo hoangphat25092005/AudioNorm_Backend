@@ -46,6 +46,17 @@ async def get_all_feedback():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/user/my-feedback", response_model=List[FeedbackWithResponses])
+async def get_my_feedback(user_id: str = Depends(get_current_user)):
+    """
+    Get all feedback submitted by the current user.
+    Requires authentication.
+    """
+    try:
+        return await FeedbackService.get_user_feedback(user_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/{feedback_id}", response_model=FeedbackWithResponses)
 async def get_feedback_with_responses(feedback_id: str):
     """
@@ -56,17 +67,6 @@ async def get_feedback_with_responses(feedback_id: str):
         return await FeedbackService.get_feedback_with_responses(feedback_id)
     except HTTPException as e:
         raise e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/user/my-feedback", response_model=List[FeedbackWithResponses])
-async def get_my_feedback(user_id: str = Depends(get_current_user)):
-    """
-    Get all feedback submitted by the current user.
-    Requires authentication.
-    """
-    try:
-        return await FeedbackService.get_user_feedback(user_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     

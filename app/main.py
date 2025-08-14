@@ -1,17 +1,38 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
 from app.config.database import init_db, close_db
 from app.controllers import auth_controller, feedback_controller, user_controller
 from app.controllers import audio_controller_fixed as audio_controller
 import os
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    try:
+        await init_db()
+        print("Application startup completed successfully")
+    except Exception as e:
+        print(f"Error during startup: {e}")
+        raise
+    
+    yield
+    
+    # Shutdown
+    try:
+        await close_db()
+        print("Application shutdown completed successfully")
+    except Exception as e:
+        print(f"Error during shutdown: {e}")
 
 app = FastAPI(
     title="AudioNorm API",
     description="Audio Normalization API with user authentication and email notifications",
     version="1.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    lifespan=lifespan
 )
 
 # Configure CORS for production
@@ -19,7 +40,7 @@ allowed_origins = [
     "http://localhost:3000",  # React development
     "http://localhost:8000",  # Local FastAPI
     "https://audionorm-backend.onrender.com",  # Production backend
-    "https://your-frontend-domain.com",  # Replace with your frontend domain
+    "https://audionorm-frontend.onrender.com",  # Your frontend on Render
 ]
 
 
@@ -49,7 +70,6 @@ async def http_exception_handler(request, exc):
         status_code=exc.status_code,
         content={"detail": exc.detail}
     )
-
 # Database lifecycle
 @app.on_event("startup")
 async def startup_event():
@@ -64,7 +84,6 @@ app.include_router(auth_controller.router, prefix="/auth", tags=["Authentication
 app.include_router(feedback_controller.router, prefix="/feedback", tags=["Feedback"])
 app.include_router(user_controller.router, prefix="/users", tags=["Users"])
 app.include_router(audio_controller.router, prefix="/audio", tags=["Audio"])  # Audio normalization endpoints
-
 @app.get("/", tags=["Root"])
 async def root():
     return {

@@ -39,6 +39,7 @@ class GoogleUser(BaseModel):
 
 # For API responses (hide password)
 class UserResponse(BaseModel):
+    _id: Optional[str] = None
     username: str
     email: EmailStr
     created_at: datetime
