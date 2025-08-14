@@ -2,29 +2,25 @@
 Audio Normalization Model
 Defines the database schema for audio normalization results
 """
-from typing import Optional
-from pydantic import BaseModel, Field
+from typing import Optional, Any
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 from bson import ObjectId
 
-class PyObjectId(ObjectId):
-    @classmethod
-    def __get_validators__(cls):
-        yield cls.validate
-
-    @classmethod
-    def validate(cls, v):
-        if not ObjectId.is_valid(v):
-            raise ValueError("Invalid objectid")
-        return ObjectId(v)
-
-    @classmethod
-    def __modify_schema__(cls, field_schema):
-        field_schema.update(type="string")
+"""
+Audio Normalization Model
+Defines the database schema for audio normalization results
+"""
+from typing import Optional, Any
+from pydantic import BaseModel, Field, ConfigDict
+from datetime import datetime
+from bson import ObjectId
 
 class AudioNormalizationResult(BaseModel):
     """Model for audio normalization results stored in database"""
-    id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    id: Optional[ObjectId] = Field(default=None, alias="_id")
     user_id: Optional[str] = None  # Optional for anonymous usage
     original_filename: str
     normalized_filename: str
@@ -57,32 +53,6 @@ class AudioNormalizationResult(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     ip_address: Optional[str] = None
     user_agent: Optional[str] = None
-    
-    class Config:
-        allow_population_by_field_name = True
-        arbitrary_types_allowed = True
-        json_encoders = {ObjectId: str}
-        schema_extra = {
-            "example": {
-                "original_filename": "song.mp3",
-                "normalized_filename": "normalized_song.wav",
-                "file_format": "MP3",
-                "file_size_bytes": 3456789,
-                "duration_seconds": 180.5,
-                "sample_rate": 44100,
-                "channels": 2,
-                "original_lufs": -15.2,
-                "target_lufs": -23.0,
-                "final_lufs": -23.1,
-                "original_peak": 0.95,
-                "final_peak": 0.89,
-                "rms_original": 0.15,
-                "rms_final": 0.08,
-                "normalization_method": "DL Model",
-                "processing_time_seconds": 2.3,
-                "used_dl_model": True
-            }
-        }
 
 class AudioAnalysisResult(BaseModel):
     """Model for audio analysis without normalization"""

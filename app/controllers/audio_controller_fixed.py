@@ -9,6 +9,11 @@ from motor.motor_asyncio import AsyncIOMotorGridFSBucket
 from bson import ObjectId
 from app.config.database import get_db
 
+# Define storage path
+current_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+STORAGE_PATH = os.path.join(current_dir, "storage", "normalized_audio")
+os.makedirs(STORAGE_PATH, exist_ok=True)
+
 router = APIRouter(tags=["Audio Normalization"])
 
 @router.get("/status")
@@ -38,7 +43,6 @@ async def list_recent_uploads(limit: int = 10):
 @router.get("/dependencies")
 async def test_audio_dependencies():
     """Test endpoint to check if audio processing dependencies are working"""
-    from app.services.audio_service import audio_service
     
     # Check dependencies
     result = {
@@ -73,9 +77,20 @@ async def test_audio_dependencies():
     
     # Check service status
     try:
+        # Try to import the full audio service
+        from app.services.audio_service import audio_service
         result["service_status"] = audio_service.get_system_status()
+        result["service_type"] = "full"
     except Exception as e:
-        result["service_status"] = {"error": str(e)}
+        # Fall back to simple service
+        try:
+            from app.services.audio_service_simple import simple_audio_service
+            result["service_status"] = simple_audio_service.get_system_status()
+            result["service_type"] = "simple"
+            result["fallback_reason"] = str(e)
+        except Exception as e2:
+            result["service_status"] = {"error": str(e2)}
+            result["service_type"] = "none"
     
     return result
 
@@ -169,7 +184,6 @@ async def normalize_audio(request: Request, target_lufs: float = -23.0, file: Up
     
     Returns information about the normalization process and a download link.
     """
-    from app.services.audio_service import audio_service
     
     try:
         print(f"API: Normalize request received - target: {target_lufs} LUFS, file: {file.filename}")
@@ -198,18 +212,37 @@ async def normalize_audio(request: Request, target_lufs: float = -23.0, file: Up
         
         print(f"Processing with client_host: {client_host}, user-agent: {user_agent}")
         
-        # Use the audio service to normalize the file
-        # In a complete implementation with authentication, you would pass the user_id
+        # Try to use the full audio service, fall back to simple service if needed
         try:
-            temp_file_path, result = await audio_service.normalize_audio_file(
+            from app.services.audio_service import audio_service
+            service_to_use = audio_service
+            service_type = "full"
+            print("Using full audio service with audio processing libraries")
+        except Exception as e:
+            print(f"Full audio service not available: {e}")
+            try:
+                from app.services.audio_service_simple import simple_audio_service
+                service_to_use = simple_audio_service
+                service_type = "simple"
+                print("Using simple audio service (fallback mode)")
+            except Exception as e2:
+                print(f"Simple audio service also failed: {e2}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": "No audio service available", "details": str(e2)}
+                )
+        
+        # Use the selected service to normalize the file
+        try:
+            temp_file_path, result = await service_to_use.normalize_audio_file(
                 file=file,
                 target_lufs=target_lufs,
-                use_dl_model=True,
+                use_dl_model=(service_type == "full"),
                 ip_address=client_host,
                 user_agent=user_agent
             )
             
-            print(f"Normalization successful. Result ID: {result.id}")
+            print(f"Normalization successful using {service_type} service. Result ID: {result.id}")
             print(f"File stored at: {result.storage_path}")
             print(f"Is stored: {result.is_stored}")
             
@@ -222,9 +255,10 @@ async def normalize_audio(request: Request, target_lufs: float = -23.0, file: Up
                 print(f"Temporary file removed: {temp_file_path}")
             
             # Return detailed information about the normalization
-            return {
+            response_data = {
                 "status": "success",
                 "message": f"Audio normalized to {target_lufs} LUFS successfully",
+                "service_type": service_type,
                 "result_id": str(result.id),
                 "original_filename": result.original_filename,
                 "normalized_filename": result.normalized_filename,
@@ -235,6 +269,12 @@ async def normalize_audio(request: Request, target_lufs: float = -23.0, file: Up
                 "processing_time_seconds": result.processing_time_seconds,
                 "download_url": f"{base_url}/audio/download/{result.id}"
             }
+            
+            if service_type == "simple":
+                response_data["warning"] = "Audio processing libraries not available. File was copied without actual normalization."
+            
+            return response_data
+            
         except Exception as process_error:
             print(f"Error in audio processing: {str(process_error)}")
             import traceback
@@ -250,11 +290,28 @@ async def normalize_audio(request: Request, target_lufs: float = -23.0, file: Up
         if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
             os.unlink(temp_file_path)
             
+        # Create more detailed error response
+        error_detail = str(e)
+        if "Normalization failed" in error_detail:
+            # Already an HTTPException raised by the service
+            error_type = "Normalization Processing Error"
+        elif "Permission denied" in error_detail or "Access is denied" in error_detail:
+            error_type = "File System Permission Error"
+            # Try to create the storage directory
+            try:
+                os.makedirs(STORAGE_PATH, exist_ok=True)
+                error_detail += " (Attempted to create storage directory)"
+            except:
+                error_detail += " (Could not create storage directory)"
+        else:
+            error_type = "General Error"
+        
         return JSONResponse(
             status_code=500,
             content={
-                "error": f"An error occurred during audio normalization: {str(e)}",
-                "details": traceback.format_exc()
+                "error": f"An error occurred during audio normalization: {error_type}",
+                "details": error_detail,
+                "traceback": traceback.format_exc()
             }
         )
 

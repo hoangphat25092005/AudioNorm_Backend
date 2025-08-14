@@ -133,7 +133,7 @@ class AudioService:
             return -23.0  # Default target
 
     def convert_to_wav_ffmpeg(self, input_path, output_path):
-        """Convert audio to WAV using FFmpeg"""
+        """Convert audio to WAV using FFmpeg (fallback method)"""
         try:
             cmd = [
                 'ffmpeg', '-i', input_path, '-acodec', 'pcm_s16le', 
@@ -147,6 +147,18 @@ class AudioService:
         except Exception as e:
             print(f"FFmpeg conversion failed: {e}")
             return False
+
+    def load_audio_file(self, file_path):
+        """Load audio file using librosa with fallback support for different formats"""
+        try:
+            # Try to load directly with librosa (supports many formats including MP3)
+            print(f"Attempting to load audio file: {file_path}")
+            audio, sr = librosa.load(file_path, sr=None, mono=False)
+            print(f"Successfully loaded audio: {audio.shape if hasattr(audio, 'shape') else len(audio)} samples at {sr}Hz")
+            return audio, sr, True
+        except Exception as e:
+            print(f"Failed to load audio with librosa: {e}")
+            return None, None, False
 
     def normalize_audio_dl(self, audio, sr, target_lufs=-23.0):
         """Normalize audio using the DL model - matches the approach in AudioNorm_DL/serve.py"""
@@ -314,25 +326,32 @@ class AudioService:
             print(f"SERVICE ERROR: Failed to create temp file: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Failed to process uploaded file: {str(e)}")
         
-        temp_wav_path = None
         temp_output_path = tempfile.mktemp(suffix=".wav")
         
         try:
-            # Handle different audio formats
+            # Handle different audio formats using librosa directly
             file_ext = file.filename.split('.')[-1].lower()
             
-            if file_ext == 'wav':
-                # Direct WAV processing
-                process_path = temp_input_path
-            else:
-                # Convert to WAV first
-                temp_wav_path = tempfile.mktemp(suffix=".wav")
-                if not self.convert_to_wav_ffmpeg(temp_input_path, temp_wav_path):
-                    raise HTTPException(status_code=400, detail=f"Failed to convert {file_ext} to WAV")
-                process_path = temp_wav_path
+            # Try to load the audio file directly with librosa
+            audio, sr, load_success = self.load_audio_file(temp_input_path)
             
-            # Load and analyze original audio
-            audio, sr = librosa.load(process_path, sr=None, mono=False)
+            if not load_success:
+                # If librosa fails, try FFmpeg conversion as fallback (for WAV files only)
+                if file_ext == 'wav':
+                    print("Direct WAV loading failed, this might be a corrupted file")
+                    raise HTTPException(status_code=400, detail=f"Failed to load {file_ext} file - file might be corrupted")
+                else:
+                    # For non-WAV files, try FFmpeg conversion
+                    print(f"Librosa failed to load {file_ext}, trying FFmpeg conversion...")
+                    temp_wav_path = tempfile.mktemp(suffix=".wav")
+                    if self.convert_to_wav_ffmpeg(temp_input_path, temp_wav_path):
+                        audio, sr, load_success = self.load_audio_file(temp_wav_path)
+                        if not load_success:
+                            raise HTTPException(status_code=400, detail=f"Failed to convert and load {file_ext} file")
+                    else:
+                        raise HTTPException(status_code=400, detail=f"Failed to process {file_ext} file - FFmpeg not available or conversion failed")
+            
+            print(f"Successfully loaded audio: {audio.shape if hasattr(audio, 'shape') else len(audio)} samples at {sr}Hz")
             
             # Ensure mono for processing
             if audio.ndim > 1:
@@ -404,7 +423,8 @@ class AudioService:
             
             # Store in database
             collection = await self._get_collection()
-            insert_result = await collection.insert_one(result.dict(by_alias=True))
+            result_dict = result.model_dump(by_alias=True, exclude={'id'})  # Exclude id since it will be auto-generated
+            insert_result = await collection.insert_one(result_dict)
             result.id = insert_result.inserted_id
             
             return temp_output_path, result
@@ -421,6 +441,17 @@ class AudioService:
             except:
                 pass
             raise HTTPException(status_code=500, detail=f"Normalization failed: {str(e)}")
+        finally:
+            # Always clean up temp files, even if there's an exception
+            try:
+                if os.path.exists(temp_input_path):
+                    os.unlink(temp_input_path)
+                if temp_wav_path and os.path.exists(temp_wav_path):
+                    os.unlink(temp_wav_path)
+                if os.path.exists(temp_output_path):
+                    os.unlink(temp_output_path)
+            except Exception as cleanup_error:
+                print(f"Warning: Cleanup failed: {cleanup_error}")
 
     async def get_normalization_history(self, user_id: Optional[str] = None, limit: int = 50) -> List[AudioNormalizationResult]:
         """Get normalization history for user or all (if admin)"""
