@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.config.database import init_db, close_db
 from app.controllers import auth_controller, feedback_controller, user_controller
+from app.controllers import audio_controller_fixed as audio_controller
 import os
 
 app = FastAPI(
@@ -20,6 +21,7 @@ allowed_origins = [
     "https://audionorm-backend.onrender.com",  # Production backend
     "https://your-frontend-domain.com",  # Replace with your frontend domain
 ]
+
 
 # In production, be more restrictive with CORS
 if os.getenv("ENVIRONMENT") == "production":
@@ -61,6 +63,7 @@ async def shutdown_event():
 app.include_router(auth_controller.router, prefix="/auth", tags=["Authentication"])
 app.include_router(feedback_controller.router, prefix="/feedback", tags=["Feedback"])
 app.include_router(user_controller.router, prefix="/users", tags=["Users"])
+app.include_router(audio_controller.router, prefix="/audio", tags=["Audio"])  # Audio normalization endpoints
 
 @app.get("/", tags=["Root"])
 async def root():
@@ -69,7 +72,24 @@ async def root():
         "version": "1.0.0",
         "status": "healthy",
         "docs_url": "/docs",
-        "environment": os.getenv("ENVIRONMENT", "development")
+        "environment": os.getenv("ENVIRONMENT", "development"),
+        "features": {
+            "authentication": "JWT-based user authentication",
+            "feedback": "User feedback and response system with email notifications",
+            "audio_normalization": "Complete audio normalization API with database storage and result tracking",
+        },
+        "endpoints": {
+            "auth": "/auth/* - Authentication endpoints",
+            "feedback": "/feedback/* - Feedback system",
+            "users": "/users/* - User management", 
+            "audio": {
+                "/audio/status": "Get API status",
+                "/audio/test": "Test endpoint",
+                "/audio/upload": "Upload audio files",
+                "/audio/normalize/{target_lufs}": "Normalize audio to target LUFS",
+                "/audio/analyze": "Analyze audio properties"
+            }
+        }
     }
 
 @app.get("/health", tags=["Health"])
