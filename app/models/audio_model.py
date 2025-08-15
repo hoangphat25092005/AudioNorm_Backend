@@ -49,6 +49,9 @@ class AudioNormalizationResult(BaseModel):
     file_id: Optional[str] = None
     is_stored: bool = False
     
+    # Reference to original uploaded file (for on-demand regeneration)
+    original_upload_id: Optional[str] = None
+    
     # Metadata
     created_at: datetime = Field(default_factory=datetime.utcnow)
     ip_address: Optional[str] = None

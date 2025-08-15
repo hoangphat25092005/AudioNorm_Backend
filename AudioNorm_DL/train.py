@@ -14,7 +14,8 @@ N_MELS = 64
 TARGETS_LUFS = [-10.0, -12.0, -14.0]  # you can add more
 MAX_SECONDS = 30.0   # trim/segment to speed up feature extraction
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-MODEL_OUT = "models/norm_mlp.pth"
+MODEL_OUT = "models/norm_cnn.pth"
+TARGET_TIME_FRAMES = 128  # Fixed time dimension for CNN
 
 # ----- Features -----
 def load_mono(path, sr=SR, max_seconds=MAX_SECONDS):
@@ -34,22 +35,53 @@ def measure_lufs(y, sr):
     return float(meter.integrated_loudness(y))
 
 def extract_features(y, sr, n_mels=N_MELS):
-    # Log-mel spectrogram → global statistics
-    S = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=n_mels, power=2.0)
+    # Extract mel-spectrogram for CNN processing
+    # Use shorter hop length for better time resolution
+    hop_length = 512
+    n_fft = 2048
+    
+    S = librosa.feature.melspectrogram(
+        y=y, sr=sr, n_mels=n_mels, n_fft=n_fft, 
+        hop_length=hop_length, power=2.0
+    )
     S_db = librosa.power_to_db(S + 1e-12)
-    mean = S_db.mean(axis=1)
-    std  = S_db.std(axis=1)
+    
+    # Normalize the spectrogram
+    S_db = (S_db - S_db.mean()) / (S_db.std() + 1e-8)
+    
+    # Resize to fixed time dimension
+    if S_db.shape[1] < TARGET_TIME_FRAMES:
+        # Pad with zeros if too short
+        pad_width = TARGET_TIME_FRAMES - S_db.shape[1]
+        S_db = np.pad(S_db, ((0, 0), (0, pad_width)), mode='constant')
+    elif S_db.shape[1] > TARGET_TIME_FRAMES:
+        # Crop if too long (take center portion)
+        start = (S_db.shape[1] - TARGET_TIME_FRAMES) // 2
+        S_db = S_db[:, start:start + TARGET_TIME_FRAMES]
+    
+    # Return as (n_mels, time_frames) for CNN
+    return S_db.astype(np.float32)
 
-    # Simple loudness-related features
+def extract_additional_features(y, sr):
+    # Extract additional scalar features for concatenation
     rms = float(np.sqrt(np.mean(y**2) + 1e-12))
     peak = float(np.max(np.abs(y)) + 1e-12)
     crest = float(peak / (rms + 1e-12))
-
-    # Spectral flatness (mean)
-    flatness = float(np.mean(librosa.feature.spectral_flatness(y=y)))
-
-    feat = np.concatenate([mean, std, np.array([rms, crest, flatness], dtype=np.float32)])
-    return feat.astype(np.float32)
+    
+    # Spectral features
+    spectral_centroids = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
+    spectral_rolloff = librosa.feature.spectral_rolloff(y=y, sr=sr)[0]
+    zero_crossing_rate = librosa.feature.zero_crossing_rate(y)[0]
+    
+    # Aggregate temporal features
+    features = np.array([
+        rms, peak, crest,
+        np.mean(spectral_centroids), np.std(spectral_centroids),
+        np.mean(spectral_rolloff), np.std(spectral_rolloff),
+        np.mean(zero_crossing_rate), np.std(zero_crossing_rate)
+    ], dtype=np.float32)
+    
+    return features
 
 # ----- Dataset -----
 class GainDataset(Dataset):
@@ -68,29 +100,92 @@ class GainDataset(Dataset):
         path = self.files[idx]
         y, sr = load_mono(path)
         lufs = measure_lufs(y, sr)
-        feat = extract_features(y, sr)
-
+        
+        # Extract spectrogram and additional features
+        spectrogram = extract_features(y, sr)  # (n_mels, time_frames)
+        additional_features = extract_additional_features(y, sr)  # (9,)
+        
         target = random.choice(TARGETS_LUFS)
         true_gain_db = target - lufs   # ideal single-step gain to hit target
         # Clamp label to a reasonable range to avoid extreme outliers
         true_gain_db = float(np.clip(true_gain_db, -30.0, 30.0))
-        return feat, np.array([true_gain_db], dtype=np.float32)
+        
+        return spectrogram, additional_features, np.array([true_gain_db], dtype=np.float32)
 
 # ----- Model -----
-class MLP(nn.Module):
-    def __init__(self, in_dim, hidden=128):
+class AudioNormCNN(nn.Module):
+    def __init__(self, n_mels=N_MELS, additional_features_dim=9):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden),
+        
+        # CNN for processing spectrograms
+        self.conv_layers = nn.Sequential(
+            # First conv block
+            nn.Conv2d(1, 32, kernel_size=(3, 3), padding=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.Linear(hidden, hidden),
+            nn.MaxPool2d(2, 2),  # Reduce spatial dimensions
+            nn.Dropout2d(0.25),
+            
+            # Second conv block
+            nn.Conv2d(32, 64, kernel_size=(3, 3), padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.Linear(hidden, 1)   # predict gain in dB
+            nn.MaxPool2d(2, 2),
+            nn.Dropout2d(0.25),
+            
+            # Third conv block
+            nn.Conv2d(64, 128, kernel_size=(3, 3), padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((4, 4)),  # Fixed output size
+            nn.Dropout2d(0.25),
         )
-    def forward(self, x): return self.net(x)
+        
+        # Calculate flattened CNN output size
+        self.cnn_output_size = 128 * 4 * 4  # 128 channels * 4 * 4
+        
+        # Fully connected layers
+        self.fc_layers = nn.Sequential(
+            nn.Linear(self.cnn_output_size + additional_features_dim, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            
+            nn.Linear(64, 1)  # Output: gain in dB
+        )
+        
+    def forward(self, spectrogram, additional_features):
+        # spectrogram: (batch, n_mels, time_frames)
+        # additional_features: (batch, 9)
+        
+        # Add channel dimension for CNN: (batch, 1, n_mels, time_frames)
+        x = spectrogram.unsqueeze(1)
+        
+        # Process through CNN
+        x = self.conv_layers(x)
+        
+        # Flatten CNN output
+        x = x.view(x.size(0), -1)  # (batch, cnn_output_size)
+        
+        # Concatenate with additional features
+        x = torch.cat([x, additional_features], dim=1)
+        
+        # Process through fully connected layers
+        x = self.fc_layers(x)
+        
+        return x
 
 def feature_dim():
-    # mean(N_MELS) + std(N_MELS) + [rms, crest, flatness] = 2*N_MELS + 3
+    # Not used for CNN, but keeping for compatibility
     return 2*N_MELS + 3
 
 # ----- Train -----
@@ -98,15 +193,18 @@ def train_one_epoch(model, loader, opt):
     model.train()
     crit = nn.L1Loss()
     epoch_loss = 0.0
-    for feats, gain_db in tqdm(loader, desc="train", leave=False):
-        feats = feats.to(DEVICE)
+    for spectrograms, additional_feats, gain_db in tqdm(loader, desc="train", leave=False):
+        spectrograms = spectrograms.to(DEVICE)
+        additional_feats = additional_feats.to(DEVICE)
         gain_db = gain_db.to(DEVICE)
-        pred = model(feats)
+        
+        pred = model(spectrograms, additional_feats)
         loss = crit(pred, gain_db)
+        
         opt.zero_grad()
         loss.backward()
         opt.step()
-        epoch_loss += loss.item() * feats.size(0)
+        epoch_loss += loss.item() * spectrograms.size(0)
     return epoch_loss / len(loader.dataset)
 
 @torch.no_grad()
@@ -114,12 +212,14 @@ def eval_loss(model, loader):
     model.eval()
     crit = nn.L1Loss()
     epoch_loss = 0.0
-    for feats, gain_db in loader:
-        feats = feats.to(DEVICE)
+    for spectrograms, additional_feats, gain_db in loader:
+        spectrograms = spectrograms.to(DEVICE)
+        additional_feats = additional_feats.to(DEVICE)
         gain_db = gain_db.to(DEVICE)
-        pred = model(feats)
+        
+        pred = model(spectrograms, additional_feats)
         loss = crit(pred, gain_db)
-        epoch_loss += loss.item() * feats.size(0)
+        epoch_loss += loss.item() * spectrograms.size(0)
     return epoch_loss / len(loader.dataset)
 
 def main():
@@ -128,23 +228,29 @@ def main():
     val_dir = "data/val" if os.path.isdir("data/val") else None
     val_set = GainDataset(val_dir) if val_dir else None
 
-    train_loader = DataLoader(train_set, batch_size=16, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_set, batch_size=16, shuffle=False, num_workers=0) if val_set else None
+    train_loader = DataLoader(train_set, batch_size=8, shuffle=True, num_workers=0)  # Reduced batch size for CNN
+    val_loader = DataLoader(val_set, batch_size=8, shuffle=False, num_workers=0) if val_set else None
 
-    model = MLP(feature_dim()).to(DEVICE)
-    opt = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
+    model = AudioNormCNN(n_mels=N_MELS).to(DEVICE)
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)  # Lower learning rate for CNN
+    
+    # Learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode='min', factor=0.7, patience=3)
 
     best = float("inf")
-    EPOCHS = 25  # Changed from 10 to 5 epochs
+    EPOCHS = 50  # More epochs for CNN training
     for epoch in range(1, EPOCHS+1):
         tr = train_one_epoch(model, train_loader, opt)
         if val_loader:
             va = eval_loss(model, val_loader)
-            print(f"Epoch {epoch}: train L1={tr:.3f} dB, val L1={va:.3f} dB")
+            print(f"Epoch {epoch}: train L1={tr:.3f} dB, val L1={va:.3f} dB, lr={opt.param_groups[0]['lr']:.2e}")
             metric = va
+            scheduler.step(va)
         else:
-            print(f"Epoch {epoch}: train L1={tr:.3f} dB")
+            print(f"Epoch {epoch}: train L1={tr:.3f} dB, lr={opt.param_groups[0]['lr']:.2e}")
             metric = tr
+            scheduler.step(tr)
+            
         if metric < best:
             best = metric
             torch.save(model.state_dict(), MODEL_OUT)

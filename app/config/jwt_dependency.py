@@ -52,3 +52,35 @@ async def get_current_user_optional(request: Request) -> Optional[dict]:
         pass
     
     return None
+
+async def get_current_user_flexible(request: Request, token: str = None):
+    """
+    Flexible JWT authentication that checks both Authorization header and query parameter
+    """
+    # First try Authorization header
+    authorization = request.headers.get("Authorization")
+    auth_token = None
+    
+    if authorization and authorization.startswith("Bearer "):
+        auth_token = authorization.split(" ")[1]
+    elif token:
+        # Fallback to query parameter
+        auth_token = token
+    
+    if not auth_token:
+        raise HTTPException(
+            status_code=401, 
+            detail="Authentication required"
+        )
+    
+    try:
+        payload = jwt.decode(auth_token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("user_id")
+        if not user_id:
+            raise HTTPException(
+                status_code=401, 
+                detail="Invalid token: no user ID"
+            )
+        return user_id
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")

@@ -18,31 +18,26 @@ from motor.motor_asyncio import AsyncIOMotorCollection
 from app.config.database import get_db
 from app.models.audio_model import AudioNormalizationResult, AudioAnalysisResult
 
-# Add AudioNorm_DL to path for imports
+# AudioNorm_DL path setup for model imports
 current_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 audionorm_dl_path = os.path.join(current_dir, "AudioNorm_DL")
 if audionorm_dl_path not in sys.path and os.path.exists(audionorm_dl_path):
     sys.path.append(audionorm_dl_path)
 
-# File storage path for normalized audio
-STORAGE_PATH = os.path.join(current_dir, "storage", "normalized_audio")
-os.makedirs(STORAGE_PATH, exist_ok=True)
-print(f"Storage path initialized: {STORAGE_PATH}")
-print(f"Storage path exists: {os.path.exists(STORAGE_PATH)}")
-print(f"Storage path is writable: {os.access(STORAGE_PATH, os.W_OK)}")
-
 # Optional imports - will be handled gracefully if not available
 try:
     import librosa
-    import pyloudnorm as pyln
     import torch
     import torch.nn as nn
     import soundfile as sf
+    # pyloudnorm is only used for LUFS measurement in the DL model
+    import pyloudnorm as pyln
     AUDIO_DEPS_AVAILABLE = True
     print("✅ Audio processing dependencies loaded successfully")
 except ImportError as e:
     AUDIO_DEPS_AVAILABLE = False
     print(f"⚠️ Audio processing dependencies not available: {e}")
+    print("Missing dependencies. Please install: pip install torch librosa soundfile pyloudnorm")
 
 class AudioService:
     def __init__(self):
@@ -163,8 +158,7 @@ class AudioService:
     def normalize_audio_dl(self, audio, sr, target_lufs=-23.0):
         """Normalize audio using the DL model - matches the approach in AudioNorm_DL/serve.py"""
         if self.model is None or not AUDIO_DEPS_AVAILABLE:
-            # Fallback to basic normalization
-            return self.normalize_audio_basic(audio, sr, target_lufs)
+            raise HTTPException(status_code=503, detail="DL model not available for normalization")
         
         try:
             # Extract features matching the training format
@@ -207,23 +201,9 @@ class AudioService:
             return normalized_audio
         except Exception as e:
             print(f"DL normalization failed: {e}")
-            return self.normalize_audio_basic(audio, sr, target_lufs)
+            raise HTTPException(status_code=500, detail=f"DL normalization failed: {str(e)}")
 
-    def normalize_audio_basic(self, audio, sr, target_lufs=-23.0):
-        """Basic audio normalization using pyloudnorm"""
-        try:
-            meter = pyln.Meter(sr)
-            loudness = meter.integrated_loudness(audio)
-            
-            if loudness == float('-inf'):
-                print("Warning: Audio is silent")
-                return audio
-                
-            normalized_audio = pyln.normalize.loudness(audio, loudness, target_lufs)
-            return normalized_audio
-        except Exception as e:
-            print(f"Basic normalization failed: {e}")
-            return audio
+
 
     async def analyze_audio_file(self, file: UploadFile) -> AudioAnalysisResult:
         """Analyze audio file properties"""
@@ -292,10 +272,10 @@ class AudioService:
         self, 
         file: UploadFile, 
         target_lufs: float = -23.0, 
-        use_dl_model: bool = True,
         user_id: Optional[str] = None,
         ip_address: Optional[str] = None,
-        user_agent: Optional[str] = None
+        user_agent: Optional[str] = None,
+        original_file_id: Optional[str] = None
     ) -> tuple[str, AudioNormalizationResult]:
         """
         Normalize audio file and store result in database
@@ -364,15 +344,13 @@ class AudioService:
             original_rms = np.sqrt(np.mean(audio_mono**2))
             original_peak = np.max(np.abs(audio_mono))
             
-            # Choose normalization method
-            if use_dl_model and self.model is not None:
+            # Use DL model for normalization (only method available)
+            if self.model is not None:
                 normalized_audio = self.normalize_audio_dl(audio_mono, sr, target_lufs)
                 method = "DL Model"
                 used_dl = True
             else:
-                normalized_audio = self.normalize_audio_basic(audio_mono, sr, target_lufs)
-                method = "Basic"
-                used_dl = False
+                raise HTTPException(status_code=503, detail="DL model not available - no fallback normalization method")
             
             # Analyze normalized audio
             final_lufs = self.measure_lufs(normalized_audio, sr)
@@ -388,10 +366,29 @@ class AudioService:
             # Generate unique file ID for storage
             file_id = str(uuid.uuid4())
             normalized_filename = f"normalized_{file_id}_{file.filename.split('.')[0]}.wav"
-            storage_file_path = os.path.join(STORAGE_PATH, normalized_filename)
             
-            # Copy the normalized file to the permanent storage
-            shutil.copy2(temp_output_path, storage_file_path)
+            # Store normalized file in GridFS instead of local storage
+            from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+            db = await get_db()
+            bucket = AsyncIOMotorGridFSBucket(db)
+            
+            # Read the normalized audio data
+            with open(temp_output_path, 'rb') as f:
+                normalized_audio_data = f.read()
+            
+            # Store in GridFS
+            gridfs_id = await bucket.upload_from_stream(
+                normalized_filename,
+                normalized_audio_data,
+                metadata={
+                    "user_id": user_id,
+                    "original_filename": file.filename,
+                    "target_lufs": target_lufs,
+                    "final_lufs": round(final_lufs, 2) if final_lufs != float('-inf') else None,
+                    "processing_method": method,
+                    "created_at": datetime.utcnow()
+                }
+            )
             
             # Create normalization result
             result = AudioNormalizationResult(
@@ -415,15 +412,21 @@ class AudioService:
                 used_dl_model=used_dl,
                 ip_address=ip_address,
                 user_agent=user_agent,
-                # Storage information
-                storage_path=storage_file_path,
-                file_id=file_id,
+                # GridFS storage information
+                storage_path=None,  # No longer using file system storage
+                file_id=str(gridfs_id),  # Store GridFS ID instead
                 is_stored=True
             )
             
             # Store in database
             collection = await self._get_collection()
             result_dict = result.model_dump(by_alias=True, exclude={'id'})  # Exclude id since it will be auto-generated
+            
+            # Add GridFS and original file references
+            result_dict["gridfs_id"] = gridfs_id
+            if original_file_id:
+                result_dict["original_file_id"] = original_file_id
+                
             insert_result = await collection.insert_one(result_dict)
             result.id = insert_result.inserted_id
             
@@ -504,8 +507,8 @@ class AudioService:
             "average_processing_time_seconds": round(stats.get("avg_processing_time", 0), 2),
             "total_audio_duration_seconds": round(stats.get("total_duration", 0), 2),
             "dl_model_usage_count": stats.get("dl_model_usage", 0),
-            "basic_normalization_count": total_count - stats.get("dl_model_usage", 0),
-            "most_common_formats": list(set(stats.get("formats", [])))
+            "most_common_formats": list(set(stats.get("formats", []))),
+            "normalization_method": "DL Model Only"
         }
     
     async def get_stored_audio_file(self, result_id: str) -> Optional[Dict[str, Any]]:
@@ -549,10 +552,10 @@ class AudioService:
         """Get audio processing system status"""
         return {
             "status": "running",
-            "audio_deps_available": AUDIO_DEPS_AVAILABLE,
+            "audio_dependencies_available": AUDIO_DEPS_AVAILABLE,  # Fixed key name
             "model_loaded": self.model is not None,
-            "supported_formats": ["wav", "mp3", "flac", "m4a"] if AUDIO_DEPS_AVAILABLE else ["wav"],
-            "normalization_methods": ["DL Model", "Basic"] if self.model else ["Basic"],
+            "supported_formats": ["wav", "mp3", "flac", "m4a"] if AUDIO_DEPS_AVAILABLE else [],
+            "normalization_methods": ["DL Model Only"] if self.model else ["None - Model Required"],
             "endpoints": [
                 "/audio/status - Get system status",
                 "/audio/normalize/{target_lufs} - Normalize audio file",
@@ -570,7 +573,7 @@ class AudioService:
                                  ip_address: Optional[str] = None, user_agent: Optional[str] = None):
         """Normalize audio to -10 LUFS (louder masters, streaming platforms)"""
         return await self.normalize_audio_file(
-            file, target_lufs=-10.0, use_dl_model=True,
+            file, target_lufs=-10.0,
             user_id=user_id, ip_address=ip_address, user_agent=user_agent
         )
     
@@ -578,7 +581,7 @@ class AudioService:
                                  ip_address: Optional[str] = None, user_agent: Optional[str] = None):
         """Normalize audio to -12 LUFS (moderate loudness for streaming)"""
         return await self.normalize_audio_file(
-            file, target_lufs=-12.0, use_dl_model=True,
+            file, target_lufs=-12.0,
             user_id=user_id, ip_address=ip_address, user_agent=user_agent
         )
     
@@ -586,7 +589,7 @@ class AudioService:
                                  ip_address: Optional[str] = None, user_agent: Optional[str] = None):
         """Normalize audio to -14 LUFS (standard for many streaming platforms)"""
         return await self.normalize_audio_file(
-            file, target_lufs=-14.0, use_dl_model=True,
+            file, target_lufs=-14.0,
             user_id=user_id, ip_address=ip_address, user_agent=user_agent
         )
 
@@ -598,20 +601,29 @@ print("✅ AudioService singleton initialized")
 try:
     if AUDIO_DEPS_AVAILABLE:
         print("✅ Audio dependencies available:")
-        print(f"   - librosa: {librosa.__version__}")
-        print(f"   - pyloudnorm: {pyln.__version__}")
-        print(f"   - torch: {torch.__version__}")
-        print(f"   - soundfile: {sf.__version__}")
-        print(f"   - numpy: {np.__version__}")
+        try:
+            print(f"   - librosa: {librosa.__version__}")
+        except:
+            print("   - librosa: version unknown")
+        try:
+            print(f"   - pyloudnorm: {pyln.__version__}")
+        except:
+            print("   - pyloudnorm: version unknown")
+        try:
+            print(f"   - torch: {torch.__version__}")
+        except:
+            print("   - torch: version unknown")
+        try:
+            print(f"   - soundfile: {sf.__version__}")
+        except:
+            print("   - soundfile: version unknown")
+        try:
+            print(f"   - numpy: {np.__version__}")
+        except:
+            print("   - numpy: version unknown")
     else:
         print("⚠️ Audio processing dependencies missing!")
-        try:
-            import pkg_resources
-            print("Available packages:")
-            for pkg in pkg_resources.working_set:
-                print(f"   - {pkg.key}: {pkg.version}")
-        except:
-            pass
+        print("Required packages: librosa, pyloudnorm, torch, soundfile, numpy")
 except Exception as e:
     print(f"⚠️ Error printing audio dependencies: {e}")
 audio_service = AudioService()
