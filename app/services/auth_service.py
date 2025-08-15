@@ -66,7 +66,7 @@ class AuthService:
         )
 
         # Save to database
-        await db.users.insert_one(user.dict())
+        await db.users.insert_one(user.model_dump())
 
         # Return user response (without password)
         return UserResponse(
@@ -127,7 +127,7 @@ class AuthService:
                 google_id=google_user.id,
                 profile_picture=google_user.picture
             )
-            await db.users.insert_one(user.dict())
+            await db.users.insert_one(user.model_dump())
         else:
             # Update existing user
             user = User(**user_dict)
