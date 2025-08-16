@@ -16,6 +16,6 @@ gunicorn>=21.2.0
 # Audio processing dependencies
 librosa>=0.10.0
 torch>=1.13.0
-pyloudnorm>=0.2.1
+pyloudnorm==0.1.1
 numpy>=1.21.0
 soundfile>=0.12.0
