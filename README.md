@@ -1,3 +1,24 @@
+## 🧠 Deep Learning Model (CNN)
+
+AudioNorm leverages a custom Convolutional Neural Network (CNN) for audio normalization. The model predicts the optimal gain to achieve a target LUFS (loudness) level for uploaded audio files.
+
+- **Model location:** [`app/services/audio_service.py`](app/services/audio_service.py) and [`AudioNorm_DL/models/norm_cnn.pth`](AudioNorm_DL/models/norm_cnn.pth)
+- **Architecture:**
+  - Multiple convolutional layers for feature extraction from mel-spectrograms
+  - Fully connected layers for regression (gain prediction)
+  - Trained on music/audio datasets for robust normalization
+- **Usage:**
+  - The backend loads the CNN model at startup and uses it for all normalization requests
+  - You can retrain or update the model using scripts in `AudioNorm_DL/`
+
+**Example (Python):**
+```python
+# See app/services/audio_service.py for full details
+class AudioNormCNN(nn.Module):
+    def __init__(self, n_mels=64, additional_features_dim=9):
+        ...
+```
+
 
 # AudioNorm Backend
 
