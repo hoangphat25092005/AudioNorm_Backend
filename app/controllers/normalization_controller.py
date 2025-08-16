@@ -16,18 +16,6 @@ from app.services.audio_service import audio_service
 
 router = APIRouter(tags=["Normalization"])
 
-@router.get("/normalize/{target_lufs}")
-async def normalize_audio_get(target_lufs: float = -23.0):
-    """
-    Test endpoint for normalization - GET method
-    """
-    return {
-        "status": "error",
-        "message": "This endpoint requires a POST request with an audio file",
-        "target_lufs": target_lufs,
-        "correct_usage": "POST /audio/normalize/{target_lufs} with a file upload",
-        "example": "curl -X POST -F 'file=@your_audio.wav' http://localhost:8000/audio/normalize/-14"
-    }
 
 @router.post("/normalize-uploaded/{file_id}/{target_lufs}")
 async def normalize_uploaded_file(file_id: str, target_lufs: float = -23.0, request: Request = None, current_user_id: str = Depends(get_current_user)):

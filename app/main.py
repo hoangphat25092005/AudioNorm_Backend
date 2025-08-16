@@ -82,9 +82,10 @@ app.include_router(upload_controller.router, prefix="/audio", tags=["Audio Uploa
 app.include_router(normalization_controller.router, prefix="/audio", tags=["Audio Normalization"])
 app.include_router(export_controller.router, prefix="/audio", tags=["Audio Export"])
 app.include_router(files_controller.router, prefix="/audio", tags=["Audio Files"])
-from app.controllers import verify_controller, reset_password_controller
+from app.controllers import verify_controller, reset_password_controller, review_audio_controller
 app.include_router(verify_controller.router, prefix="/verify", tags=["Verify"])
 app.include_router(reset_password_controller.router, prefix="/auth", tags=["Password Reset"])
+app.include_router(review_audio_controller.router, tags=["Audio Preview"])
 @app.get("/", tags=["Root"])
 async def root():
     return {
