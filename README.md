@@ -1,63 +1,84 @@
+
 # AudioNorm Backend
 
-FastAPI backend for the AudioNorm platform with authentication (local + Google OAuth), feedback with email notifications, and MongoDB persistence.
+![Python](https://img.shields.io/badge/python-3.11%2B-blue?logo=python)
+![FastAPI](https://img.shields.io/badge/FastAPI-async-green?logo=fastapi)
+![MongoDB](https://img.shields.io/badge/MongoDB-async-green?logo=mongodb)
+![License](https://img.shields.io/github/license/hoangphat25092005/AudioNorm_Backend)
 
-- App entrypoint: [app/main.py](app/main.py)
-- API docs: http://localhost:8000/docs
-- OpenAPI JSON: http://localhost:8000/openapi.json
+> **AudioNorm Backend** is a modern FastAPI backend for audio normalization, user authentication (local & Google OAuth), feedback with email notifications, and MongoDB persistence. Built for speed, security, and extensibility.
 
-## Features
+## 🚀 Features
 
-- FastAPI application with CORS ([app/main.py](app/main.py))
-- MongoDB via Motor async driver ([app/config/database.py](app/config/database.py))
-- JWT auth, local register/login ([`app.services.auth_service.AuthService`](app/services/auth_service.py))
-- Google OAuth login ([app/config/oauth.py](app/config/oauth.py), [app/controllers/auth_controller.py](app/controllers/auth_controller.py))
-- Feedback submission and threaded responses with email notifications
-  - Service: [`app.services.feedback_service.FeedbackService`](app/services/feedback_service.py)
-  - Email: [`app.services.email_service.EmailService`](app/services/email_service.py)
+- 🔒 JWT authentication (local & Google OAuth)
+- 📧 Feedback system with email notifications
+- 🎧 Audio normalization API (LUFS, preview, export)
+- 🗄️ MongoDB async storage (Motor)
+- 📄 Interactive API docs (Swagger/OpenAPI)
+- 🐳 Docker & Render deployment ready
 
-## Project structure
+## 📂 Project Structure
 
-```
+```text
 AudioNorm_Backend/
 ├── app/
-│   ├── main.py                      # FastAPI app (used by uvicorn)
-│   ├── __init__.py                  # Minimal app (auth only)
-│   ├── config/
-│   │   ├── database.py              # MongoDB connection (Motor)
-│   │   ├── email.py                 # FastMail configuration
-│   │   ├── jwt_dependency.py        # JWT dependency for protected routes
-│   │   └── oauth.py                 # Google OAuth (Authlib)
-│   ├── controllers/
-│   │   ├── auth_controller.py       # /auth endpoints
-│   │   ├── feedback_controller.py   # /feedback endpoints
-│   │   └── user_controller.py       # /users endpoints
-│   ├── models/
-│   │   ├── feedback_model.py        # Feedback and response models
-│   │   └── user.py                  # User models
-│   └── services/
-│       ├── auth_service.py          # Register/Login/JWT/Google auth
-│       ├── email_service.py         # Email sending logic
-│       ├── feedback_service.py      # Feedback flow
-│       └── user_service.py          # User CRUD helpers
-├── requirements.txt
-├── Dockerfile
-├── render.yaml
-├── start.sh
-└── DEPLOYMENT.md
+│   ├── main.py                # FastAPI app entrypoint
+│   ├── config/                # DB, email, JWT, OAuth config
+│   ├── controllers/           # API route controllers
+│   ├── models/                # Pydantic & DB models
+│   └── services/              # Business logic
+├── requirements.txt           # Python dependencies
+├── Dockerfile                 # Container build
+├── render.yaml                # Render deployment config
+├── start.sh                   # Entrypoint script
+└── DEPLOYMENT.md              # Deployment guide
 ```
 
-Key files and symbols:
-- App: [app/main.py](app/main.py)
-- Auth service: [`app.services.auth_service.AuthService`](app/services/auth_service.py)
-- Feedback service: [`app.services.feedback_service.FeedbackService`](app/services/feedback_service.py)
-- Email service: [`app.services.email_service.EmailService`](app/services/email_service.py)
-- JWT dependency: [`app.config.jwt_dependency.get_current_user`](app/config/jwt_dependency.py)
-- Database config: [app/config/database.py](app/config/database.py)
+## 🛠️ Quickstart
 
-## Requirements
+```bash
+# 1. Clone the repo
+git clone https://github.com/hoangphat25092005/AudioNorm_Backend.git
+cd AudioNorm_Backend
 
-- Python 3.11
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Set up your .env (see .env.example)
+
+# 4. Run the server
+uvicorn app.main:app --reload
+```
+
+## 📑 API Documentation
+
+- Swagger UI: [http://localhost:8000/docs](http://localhost:8000/docs)
+- ReDoc: [http://localhost:8000/redoc](http://localhost:8000/redoc)
+- OpenAPI JSON: [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json)
+
+## 🧩 Main Components
+
+- **Authentication:** JWT, Google OAuth, password reset
+- **Audio Normalization:** Upload, normalize, preview, export (LUFS)
+- **Feedback:** User feedback, threaded responses, email notifications
+- **User Management:** Registration, profile, password reset
+
+## 📝 Example Request
+
+```bash
+# Normalize audio (POST)
+curl -X POST "http://localhost:8000/audio/normalize/-14" \
+  -H "Authorization: Bearer <token>" \
+  -F "file=@your_audio.wav"
+```
+
+## 🤝 Contributing
+
+Pull requests are welcome! For major changes, please open an issue first to discuss what you would like to change.
+
+## 📄 License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
 - MongoDB (Atlas or local)
 - SMTP credentials (optional, for email notifications)
 
