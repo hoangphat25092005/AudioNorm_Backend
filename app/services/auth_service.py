@@ -48,10 +48,12 @@ class AuthService:
 
     @staticmethod
     async def register(user_data: UserRegister) -> UserResponse:
-        """Register a new user"""
-        # Get database connection
+        """Register a new user and send verification email"""
+        import secrets
+        from app.services.email_service import EmailService
+
         db = await get_db()
-        
+
         # Verify passwords match
         if user_data.password != user_data.confirm_password:
             raise HTTPException(status_code=400, detail="Passwords do not match")
@@ -62,16 +64,27 @@ class AuthService:
         if await db.users.find_one({"email": user_data.email}):
             raise HTTPException(status_code=400, detail="Email already registered")
 
-        # Create new user
+        # Generate verification token
+        verification_token = secrets.token_urlsafe(32)
+
+        # Create new user with is_verified=False and token
         user = User(
             username=user_data.username,
             email=user_data.email,
             password=AuthService.get_password_hash(user_data.password),
-            created_at=datetime.utcnow()
+            created_at=datetime.utcnow(),
+            is_verified=False,
+            verification_token=verification_token
         )
 
         # Save to database
         result = await db.users.insert_one(user.dict())
+
+        # Send verification email
+        try:
+            await EmailService.send_verification_email(user.email, user.username, verification_token)
+        except Exception as e:
+            print(f"Failed to send verification email: {e}")
 
         # Return user response (without password)
         return UserResponse(

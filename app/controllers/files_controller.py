@@ -167,6 +167,18 @@ async def get_normalized_files(
         cursor = db["audio_normalizations"].find(query_filter).sort("created_at", -1).skip(offset).limit(limit)
         files = await cursor.to_list(length=limit)
         
+        # Get unique user IDs for username lookup
+        user_ids = list(set([doc.get("user_id") for doc in files if doc.get("user_id")]))
+        
+        # Lookup usernames from users collection
+        user_lookup = {}
+        if user_ids:
+            users = await db["users"].find(
+                {"_id": {"$in": [ObjectId(uid) for uid in user_ids]}},
+                {"username": 1}
+            ).to_list(length=len(user_ids))
+            user_lookup = {str(user["_id"]): user.get("username", "Unknown") for user in users}
+        
         # Format files for response
         formatted_files = []
         for norm_doc in files:
@@ -188,7 +200,7 @@ async def get_normalized_files(
                 "original_filename": original_filename,
                 "normalized_filename": normalized_filename,
                 "user_id": norm_doc.get("user_id"),
-                "user_name": norm_doc.get("user_id", "Unknown"),  # Could be enhanced with actual user lookup
+                "user_name": user_lookup.get(norm_doc.get("user_id"), "Unknown"),  # Use actual username lookup
                 "uploaded_at": norm_doc.get("created_at"),  # Use creation time
                 "normalized_at": norm_doc.get("created_at"),
                 "file_size": norm_doc.get("file_size_bytes"),
@@ -240,14 +252,9 @@ async def get_original_files(
     try:
         db = await get_db()
         
-        # Query for original files (uploaded status or no status)
+        # Query for ALL original files belonging to the user (regardless of processing status)
         query_filter = {
-            "user_id": current_user_id,
-            "$or": [
-                {"status": "uploaded"},
-                {"status": {"$exists": False}},
-                {"status": None}
-            ]
+            "user_id": current_user_id
         }
         
         print(f"DEBUG: Searching for original files with query: {query_filter}")
@@ -259,6 +266,18 @@ async def get_original_files(
         # Get files with pagination
         cursor = db["audio_files"].find(query_filter).sort("uploaded_at", -1).skip(offset).limit(limit)
         files = await cursor.to_list(length=limit)
+        
+        # Get unique user IDs for username lookup
+        user_ids = list(set([doc.get("user_id") for doc in files if doc.get("user_id")]))
+        
+        # Lookup usernames from users collection
+        user_lookup = {}
+        if user_ids:
+            users = await db["users"].find(
+                {"_id": {"$in": [ObjectId(uid) for uid in user_ids]}},
+                {"username": 1}
+            ).to_list(length=len(user_ids))
+            user_lookup = {str(user["_id"]): user.get("username", "Unknown") for user in users}
         
         # Format files for response
         formatted_files = []
@@ -272,8 +291,8 @@ async def get_original_files(
                 if len(parts) >= 3:
                     clean_name = parts[2]
             
-            # Get user name from the document or use user_id as fallback
-            user_display = file_doc.get("user_name", file_doc.get("user_id", "Unknown"))
+            # Get user name from lookup instead of document
+            user_display = user_lookup.get(file_doc.get("user_id"), "Unknown")
             
             file_info = {
                 "id": str(file_doc["_id"]),

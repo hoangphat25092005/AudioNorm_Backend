@@ -35,22 +35,7 @@ class FeedbackService:
         result = await db['feedbacks'].insert_one(feedback_dict)
         feedback_dict["_id"] = str(result.inserted_id)
 
-        # Send confirmation email to the user
-        try:
-            # Validate user_id before converting to ObjectId
-            user_object_id = ObjectId(user_id)
-            user = await db['users'].find_one({"_id": user_object_id})
-            if user and user.get('email'):
-                email_result = await EmailService.send_feedback_confirmation(
-                    user_email=user['email'],
-                    username=user.get('username', 'User'),
-                    feedback_content=feedback.feedback_text,
-                    feedback_id=str(result.inserted_id)
-                )
-                logger.info(f"Email confirmation result: {email_result}")
-        except Exception as e:
-            logger.warning(f"Failed to send feedback confirmation email: {str(e)}")
-            # Don't fail feedback submission if email fails
+    # No confirmation email sent when user submits feedback
 
         return feedback_dict
     
@@ -102,11 +87,14 @@ class FeedbackService:
         
         # Send email notification to feedback author (if not responding to own feedback)
         try:
-            if (feedback_author and 
+            is_verified = feedback_author.get('is_verified', False) if feedback_author else False
+            if (
+                feedback_author and 
                 response_author and 
                 str(feedback_author['_id']) != user_id and
-                feedback_author.get('email')):
-                
+                feedback_author.get('email') and
+                is_verified
+            ):
                 await EmailService.send_feedback_notification(
                     feedback_author_email=feedback_author['email'],
                     feedback_author_name=feedback_author.get('username', 'User'),

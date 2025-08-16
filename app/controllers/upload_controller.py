@@ -10,7 +10,7 @@ from datetime import datetime
 import os
 
 from app.config.database import get_db
-from app.config.jwt_dependency import get_current_user
+from app.config.jwt_dependency import get_current_user, get_current_user_flexible, get_current_user_flexible, get_current_user_flexible
 
 router = APIRouter(tags=["Upload"])
 
@@ -170,16 +170,26 @@ async def get_user_files(request: Request, limit: int = 50, current_user_id: str
         )
 
 @router.get("/stream-upload/{file_id}")
-async def stream_uploaded_file(file_id: str, current_user_id: str = Depends(get_current_user)):
+async def stream_uploaded_file(file_id: str, request: Request, token: str = None):
     """
-    Stream an uploaded (original) audio file
+    Stream an uploaded (original) audio file with range support for seeking
     """
     try:
+        # Get current user with flexible authentication
+        current_user_id = await get_current_user_flexible(request, token)
         db = await get_db()
         bucket = AsyncIOMotorGridFSBucket(db)
         
-        # Get file metadata
-        file_doc = await db["audio_files"].find_one({"_id": ObjectId(file_id)})
+
+        from bson import ObjectId
+        try:
+            file_doc = await db["audio_files"].find_one({"_id": ObjectId(file_id)})
+        except Exception as e:
+            print(f"Error converting file_id to ObjectId: {e}")
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Invalid file id: {file_id}"}
+            )
         if not file_doc:
             return JSONResponse(
                 status_code=404,
@@ -193,31 +203,95 @@ async def stream_uploaded_file(file_id: str, current_user_id: str = Depends(get_
                 content={"error": "You can only stream your own files"}
             )
         
-        # Get the GridFS file
+        # Get the GridFS file using the gridfs_id field
         gridfs_id = file_doc.get("gridfs_id")
         if not gridfs_id:
             return JSONResponse(
                 status_code=404,
                 content={"error": "File data not found in storage"}
             )
-        
+
         try:
-            # Stream the file from GridFS
-            import io
-            file_stream = io.BytesIO()
-            await bucket.download_to_stream(gridfs_id, file_stream)
-            file_data = file_stream.getvalue()
-            
-            # Return the file for streaming
-            from fastapi.responses import Response
-            return Response(
-                content=file_data,
-                media_type=file_doc.get("content_type", "audio/mpeg"),
-                headers={
-                    "Content-Disposition": f'inline; filename="{file_doc["filename"]}"'
+            # Get file info from GridFS using gridfs_id
+            grid_out = await bucket.open_download_stream(gridfs_id)
+            file_size = grid_out.length
+
+            # Determine content type
+            filename = file_doc.get("filename", "audio.mp3")
+            file_extension = filename.split(".")[-1].lower()
+            content_type_map = {
+                "mp3": "audio/mpeg",
+                "wav": "audio/wav",
+                "flac": "audio/flac",
+                "m4a": "audio/mp4",
+                "aac": "audio/aac",
+                "ogg": "audio/ogg"
+            }
+            content_type = content_type_map.get(file_extension, "audio/mpeg")
+
+            # Handle range requests for seeking
+            range_header = request.headers.get('range')
+            if range_header:
+                byte_start = 0
+                byte_end = file_size - 1
+
+                # Parse range header
+                if range_header.startswith('bytes='):
+                    range_value = range_header[6:]
+                    if '-' in range_value:
+                        start_str, end_str = range_value.split('-', 1)
+                        if start_str:
+                            byte_start = int(start_str)
+                        if end_str:
+                            byte_end = int(end_str)
+
+                # Ensure valid range
+                if byte_end >= file_size:
+                    byte_end = file_size - 1
+                if byte_start < 0:
+                    byte_start = 0
+                if byte_start > byte_end:
+                    return JSONResponse(
+                        status_code=416,
+                        content={"error": "Range not satisfiable"}
+                    )
+
+                content_length = byte_end - byte_start + 1
+
+                # Read the requested range
+                await grid_out.seek(byte_start)
+                chunk_data = await grid_out.read(content_length)
+
+                headers = {
+                    'Content-Range': f'bytes {byte_start}-{byte_end}/{file_size}',
+                    'Accept-Ranges': 'bytes',
+                    'Content-Length': str(content_length),
+                    'Content-Type': content_type,
                 }
-            )
-            
+
+                from fastapi.responses import Response
+                return Response(content=chunk_data, status_code=206, headers=headers)
+
+            else:
+                # Stream the entire file
+                import io
+                file_stream = io.BytesIO()
+                await bucket.download_to_stream(gridfs_id, file_stream)
+                file_data = file_stream.getvalue()
+
+                headers = {
+                    'Content-Length': str(file_size),
+                    'Accept-Ranges': 'bytes',
+                    'Content-Type': content_type,
+                }
+
+                from fastapi.responses import Response
+                return Response(
+                    content=file_data,
+                    media_type=content_type,
+                    headers=headers
+                )
+
         except Exception as e:
             return JSONResponse(
                 status_code=404,

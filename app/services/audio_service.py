@@ -59,64 +59,163 @@ class AudioService:
             return
             
         try:
-            # Updated MLP model matching the one from AudioNorm_DL/train.py
-            class MLP(nn.Module):
-                def __init__(self, in_dim=131, hidden=128):
+            # CNN model matching the one from AudioNorm_DL/train.py
+            class AudioNormCNN(nn.Module):
+                def __init__(self, n_mels=64, additional_features_dim=9):
                     super().__init__()
-                    self.net = nn.Sequential(
-                        nn.Linear(in_dim, hidden),
+                    
+                    # CNN for processing spectrograms
+                    self.conv_layers = nn.Sequential(
+                        # First conv block
+                        nn.Conv2d(1, 32, kernel_size=(3, 3), padding=1),
+                        nn.BatchNorm2d(32),
                         nn.ReLU(),
-                        nn.Linear(hidden, hidden),
+                        nn.MaxPool2d(2, 2),  # Reduce spatial dimensions
+                        nn.Dropout2d(0.25),
+                        
+                        # Second conv block
+                        nn.Conv2d(32, 64, kernel_size=(3, 3), padding=1),
+                        nn.BatchNorm2d(64),
                         nn.ReLU(),
-                        nn.Linear(hidden, 1)   # predict gain in dB
+                        nn.MaxPool2d(2, 2),
+                        nn.Dropout2d(0.25),
+                        
+                        # Third conv block
+                        nn.Conv2d(64, 128, kernel_size=(3, 3), padding=1),
+                        nn.BatchNorm2d(128),
+                        nn.ReLU(),
+                        nn.AdaptiveAvgPool2d((4, 4)),  # Fixed output size
+                        nn.Dropout2d(0.25),
                     )
-                
-                def forward(self, x):
-                    return self.net(x)
+                    
+                    # Calculate flattened CNN output size
+                    self.cnn_output_size = 128 * 4 * 4  # 128 channels * 4 * 4
+                    
+                    # Fully connected layers
+                    self.fc_layers = nn.Sequential(
+                        nn.Linear(self.cnn_output_size + additional_features_dim, 256),
+                        nn.BatchNorm1d(256),
+                        nn.ReLU(),
+                        nn.Dropout(0.5),
+                        
+                        nn.Linear(256, 128),
+                        nn.BatchNorm1d(128),
+                        nn.ReLU(),
+                        nn.Dropout(0.3),
+                        
+                        nn.Linear(128, 64),
+                        nn.ReLU(),
+                        nn.Dropout(0.2),
+                        
+                        nn.Linear(64, 1)  # Output: gain in dB
+                    )
+                    
+                def forward(self, spectrogram, additional_features):
+                    # spectrogram: (batch, n_mels, time_frames)
+                    # additional_features: (batch, 9)
+                    
+                    # Add channel dimension for CNN: (batch, 1, n_mels, time_frames)
+                    x = spectrogram.unsqueeze(1)
+                    
+                    # Process through CNN
+                    x = self.conv_layers(x)
+                    
+                    # Flatten CNN output
+                    x = x.view(x.size(0), -1)  # (batch, cnn_output_size)
+                    
+                    # Concatenate with additional features
+                    x = torch.cat([x, additional_features], dim=1)
+                    
+                    # Process through fully connected layers
+                    x = self.fc_layers(x)
+                    
+                    return x
             
-            # Calculate feature dimension
+            # Model parameters
             N_MELS = 64  # Same as in train.py
-            feature_dim = 2*N_MELS + 3  # mean + std + [rms, crest, flatness]
+            TARGET_TIME_FRAMES = 128  # Fixed time dimension for CNN
             
-            # Try to load the model
-            model_path = os.path.join(audionorm_dl_path, "models", "norm_mlp.pth")
-            if os.path.exists(model_path):
-                self.model = MLP(in_dim=feature_dim)
-                self.model.load_state_dict(torch.load(model_path, map_location='cpu'))
+            # Try to load the model - check for both CNN and MLP model files
+            cnn_model_path = os.path.join(audionorm_dl_path, "models", "norm_cnn.pth")
+            # mlp_model_path = os.path.join(audionorm_dl_path, "models", "norm_mlp.pth")
+            
+            if os.path.exists(cnn_model_path):
+                self.model = AudioNormCNN(n_mels=N_MELS, additional_features_dim=9)
+                self.model.load_state_dict(torch.load(cnn_model_path, map_location='cpu'))
                 self.model.eval()
                 self.N_MELS = N_MELS  # Store for feature extraction
-                print("✅ Pre-trained model loaded successfully from:", model_path)
+                self.TARGET_TIME_FRAMES = TARGET_TIME_FRAMES  # Store for feature extraction
+                print("✅ Pre-trained CNN model loaded successfully from:", cnn_model_path)
             else:
-                print("⚠️  Pre-trained model not found at:", model_path, "Using fallback normalization.")
+                print("⚠️  No trained model found. Please train a model first.")
         except Exception as e:
             print(f"⚠️  Failed to load model: {e}")
     
     def extract_features(self, audio, sr):
-        """Extract audio features for the model - matches training features in AudioNorm_DL/train.py"""
+        """Extract spectrogram features for the CNN model - matches training features in AudioNorm_DL/train.py"""
         try:
-            # Extract log-mel spectrogram features
-            n_mels = getattr(self, 'N_MELS', 64)  # Default to 64 if not set
-            S = librosa.feature.melspectrogram(y=audio, sr=sr, n_mels=n_mels, power=2.0)
-            S_db = librosa.power_to_db(S + 1e-12)
-            mean = S_db.mean(axis=1)
-            std = S_db.std(axis=1)
+            # Extract mel-spectrogram for CNN processing
+            n_mels = getattr(self, 'N_MELS', 64)
+            target_time_frames = getattr(self, 'TARGET_TIME_FRAMES', 128)
             
-            # Simple loudness-related features
+            # Use shorter hop length for better time resolution (matching train.py)
+            hop_length = 512
+            n_fft = 2048
+            
+            S = librosa.feature.melspectrogram(
+                y=audio, sr=sr, n_mels=n_mels, n_fft=n_fft, 
+                hop_length=hop_length, power=2.0
+            )
+            S_db = librosa.power_to_db(S + 1e-12)
+            
+            # Normalize the spectrogram
+            S_db = (S_db - S_db.mean()) / (S_db.std() + 1e-8)
+            
+            # Resize to fixed time dimension
+            if S_db.shape[1] < target_time_frames:
+                # Pad with zeros if too short
+                pad_width = target_time_frames - S_db.shape[1]
+                S_db = np.pad(S_db, ((0, 0), (0, pad_width)), mode='constant')
+            elif S_db.shape[1] > target_time_frames:
+                # Crop if too long (take center portion)
+                start = (S_db.shape[1] - target_time_frames) // 2
+                S_db = S_db[:, start:start + target_time_frames]
+            
+            # Return as (n_mels, time_frames) for CNN
+            return S_db.astype(np.float32)
+        except Exception as e:
+            print(f"Spectrogram extraction failed: {e}")
+            # Return zeros with the correct dimensions
+            n_mels = getattr(self, 'N_MELS', 64)
+            target_time_frames = getattr(self, 'TARGET_TIME_FRAMES', 128)
+            return np.zeros((n_mels, target_time_frames), dtype=np.float32)
+
+    def extract_additional_features(self, audio, sr):
+        """Extract additional scalar features for concatenation - matches training features in AudioNorm_DL/train.py"""
+        try:
+            # Basic audio features
             rms = float(np.sqrt(np.mean(audio**2) + 1e-12))
             peak = float(np.max(np.abs(audio)) + 1e-12)
             crest = float(peak / (rms + 1e-12))
             
-            # Spectral flatness
-            flatness = float(np.mean(librosa.feature.spectral_flatness(y=audio)))
+            # Spectral features
+            spectral_centroids = librosa.feature.spectral_centroid(y=audio, sr=sr)[0]
+            spectral_rolloff = librosa.feature.spectral_rolloff(y=audio, sr=sr)[0]
+            zero_crossing_rate = librosa.feature.zero_crossing_rate(audio)[0]
             
-            # Concatenate all features
-            feat = np.concatenate([mean, std, np.array([rms, crest, flatness], dtype=np.float32)])
-            return feat.astype(np.float32)
+            # Aggregate temporal features (9 features total)
+            features = np.array([
+                rms, peak, crest,
+                np.mean(spectral_centroids), np.std(spectral_centroids),
+                np.mean(spectral_rolloff), np.std(spectral_rolloff),
+                np.mean(zero_crossing_rate), np.std(zero_crossing_rate)
+            ], dtype=np.float32)
+            
+            return features
         except Exception as e:
-            print(f"Feature extraction failed: {e}")
-            # Return zeros with the correct feature dimension
-            n_mels = getattr(self, 'N_MELS', 64)
-            return np.zeros(2*n_mels + 3, dtype=np.float32)
+            print(f"Additional feature extraction failed: {e}")
+            # Return zeros with the correct feature dimension (9 features)
+            return np.zeros(9, dtype=np.float32)
 
     def measure_lufs(self, audio, sr):
         """Measure LUFS using pyloudnorm"""
@@ -156,18 +255,22 @@ class AudioService:
             return None, None, False
 
     def normalize_audio_dl(self, audio, sr, target_lufs=-23.0):
-        """Normalize audio using the DL model - matches the approach in AudioNorm_DL/serve.py"""
+        """Normalize audio using the CNN DL model - matches the approach in AudioNorm_DL/serve.py"""
         if self.model is None or not AUDIO_DEPS_AVAILABLE:
             raise HTTPException(status_code=503, detail="DL model not available for normalization")
         
         try:
             # Extract features matching the training format
-            features = self.extract_features(audio, sr)
-            features_tensor = torch.FloatTensor(features).unsqueeze(0)
+            spectrogram = self.extract_features(audio, sr)  # (n_mels, time_frames)
+            additional_features = self.extract_additional_features(audio, sr)  # (9,)
+            
+            # Convert to tensors and add batch dimension
+            spectrogram_tensor = torch.FloatTensor(spectrogram).unsqueeze(0)  # (1, n_mels, time_frames)
+            additional_features_tensor = torch.FloatTensor(additional_features).unsqueeze(0)  # (1, 9)
             
             # Predict gain using the model
             with torch.no_grad():
-                predicted_gain = self.model(features_tensor).item()
+                predicted_gain = self.model(spectrogram_tensor, additional_features_tensor).item()
             
             # Measure original LUFS
             meter = pyln.Meter(sr)
@@ -344,13 +447,13 @@ class AudioService:
             original_rms = np.sqrt(np.mean(audio_mono**2))
             original_peak = np.max(np.abs(audio_mono))
             
-            # Use DL model for normalization (only method available)
+            # Use CNN DL model for normalization
             if self.model is not None:
                 normalized_audio = self.normalize_audio_dl(audio_mono, sr, target_lufs)
-                method = "DL Model"
+                method = "CNN DL Model"
                 used_dl = True
             else:
-                raise HTTPException(status_code=503, detail="DL model not available - no fallback normalization method")
+                raise HTTPException(status_code=503, detail="CNN DL model not available - please ensure norm_cnn.pth exists")
             
             # Analyze normalized audio
             final_lufs = self.measure_lufs(normalized_audio, sr)
@@ -508,7 +611,7 @@ class AudioService:
             "total_audio_duration_seconds": round(stats.get("total_duration", 0), 2),
             "dl_model_usage_count": stats.get("dl_model_usage", 0),
             "most_common_formats": list(set(stats.get("formats", []))),
-            "normalization_method": "DL Model Only"
+            "normalization_method": "CNN DL Model"
         }
     
     async def get_stored_audio_file(self, result_id: str) -> Optional[Dict[str, Any]]:
@@ -555,7 +658,7 @@ class AudioService:
             "audio_dependencies_available": AUDIO_DEPS_AVAILABLE,  # Fixed key name
             "model_loaded": self.model is not None,
             "supported_formats": ["wav", "mp3", "flac", "m4a"] if AUDIO_DEPS_AVAILABLE else [],
-            "normalization_methods": ["DL Model Only"] if self.model else ["None - Model Required"],
+            "normalization_methods": ["CNN DL Model"] if self.model else ["None - CNN Model Required"],
             "endpoints": [
                 "/audio/status - Get system status",
                 "/audio/normalize/{target_lufs} - Normalize audio file",

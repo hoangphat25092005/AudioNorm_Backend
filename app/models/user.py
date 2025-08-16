@@ -16,6 +16,8 @@ class User(BaseModel):
     auth_provider: AuthProvider = AuthProvider.LOCAL
     google_id: Optional[str] = None
     profile_picture: Optional[HttpUrl] = None
+    is_verified: bool = False
+    verification_token: Optional[str] = None
 
 # For registration endpoint
 class UserRegister(BaseModel):

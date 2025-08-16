@@ -301,7 +301,7 @@ async def export_audio_file(
         )
 
 @router.get("/stream/{file_id}")
-async def stream_audio_file(file_id: str, request: Request, current_user_id: str = Depends(get_current_user)):
+async def stream_audio_file(file_id: str, request: Request, token: str = None):
     """
     Stream an audio file for playback (supports range requests for seeking)
     
@@ -311,35 +311,58 @@ async def stream_audio_file(file_id: str, request: Request, current_user_id: str
     Returns the audio file with proper streaming headers.
     """
     try:
+        # Use flexible authentication to support both header and query parameter
+        current_user_id = await get_current_user_flexible(request, token)
         db = await get_db()
         bucket = AsyncIOMotorGridFSBucket(db)
-        
-        # Find the file document
-        file_doc = await db["audio_files"].find_one({"_id": ObjectId(file_id)})
-        
+
+
+        from bson import ObjectId
+        file_doc = None
+        collection_type = None
+        try:
+            file_doc = await db["audio_files"].find_one({"_id": ObjectId(file_id)})
+            collection_type = "audio_files" if file_doc else None
+        except Exception as e:
+            print(f"Error converting file_id to ObjectId (audio_files): {e}")
         if not file_doc:
+            try:
+                file_doc = await db["audio_normalizations"].find_one({"_id": ObjectId(file_id)})
+                collection_type = "audio_normalizations" if file_doc else None
+            except Exception as e:
+                print(f"Error converting file_id to ObjectId (audio_normalizations): {e}")
+        if not file_doc:
+            print(f"File not found in either audio_files or audio_normalizations for id: {file_id}")
             raise HTTPException(status_code=404, detail="File not found")
-        
+
         # Check user permissions
         if file_doc.get("user_id") != current_user_id:
             raise HTTPException(status_code=403, detail="Access denied")
-        
-        # Determine which file to stream (normalized or original)
-        if file_doc.get("status") == "normalized" and file_doc.get("normalized_gridfs_id"):
-            gridfs_id = file_doc.get("normalized_gridfs_id")
+
+        # Determine which file to stream
+        if collection_type == "audio_files":
+            # Old/original files
+            if file_doc.get("status") == "normalized" and file_doc.get("normalized_gridfs_id"):
+                gridfs_id = file_doc.get("normalized_gridfs_id")
+                filename = file_doc.get("normalized_filename", "audio.mp3")
+            else:
+                gridfs_id = file_doc.get("gridfs_id")
+                filename = file_doc.get("filename", "audio.mp3")
+        elif collection_type == "audio_normalizations":
+            # New normalized files
+            gridfs_id = file_doc.get("gridfs_id")
             filename = file_doc.get("normalized_filename", "audio.mp3")
         else:
-            gridfs_id = file_doc.get("gridfs_id")
-            filename = file_doc.get("filename", "audio.mp3")
-        
+            raise HTTPException(status_code=404, detail="File not found")
+
         if not gridfs_id:
             raise HTTPException(status_code=404, detail="File data not found")
-        
+
         # Get file info from GridFS
         try:
             grid_out = await bucket.open_download_stream(gridfs_id)
             file_size = grid_out.length
-            
+
             # Determine content type
             file_extension = filename.split(".")[-1].lower()
             content_type_map = {
@@ -351,13 +374,13 @@ async def stream_audio_file(file_id: str, request: Request, current_user_id: str
                 "ogg": "audio/ogg"
             }
             content_type = content_type_map.get(file_extension, "audio/mpeg")
-            
+
             # Handle range requests for seeking
             range_header = request.headers.get('range')
             if range_header:
                 byte_start = 0
                 byte_end = file_size - 1
-                
+
                 # Parse range header
                 if range_header.startswith('bytes='):
                     range_value = range_header[6:]
@@ -367,7 +390,7 @@ async def stream_audio_file(file_id: str, request: Request, current_user_id: str
                             byte_start = int(start_str)
                         if end_str:
                             byte_end = int(end_str)
-                
+
                 # Ensure valid range
                 if byte_end >= file_size:
                     byte_end = file_size - 1
@@ -375,45 +398,45 @@ async def stream_audio_file(file_id: str, request: Request, current_user_id: str
                     byte_start = 0
                 if byte_start > byte_end:
                     raise HTTPException(status_code=416, detail="Range not satisfiable")
-                
+
                 content_length = byte_end - byte_start + 1
-                
+
                 # Read the requested range
                 await grid_out.seek(byte_start)
                 chunk_data = await grid_out.read(content_length)
-                
+
                 headers = {
                     'Content-Range': f'bytes {byte_start}-{byte_end}/{file_size}',
                     'Accept-Ranges': 'bytes',
                     'Content-Length': str(content_length),
                     'Content-Type': content_type,
                 }
-                
+
                 return Response(content=chunk_data, status_code=206, headers=headers)
-            
+
             else:
                 # Stream the entire file
                 import io
                 file_stream = io.BytesIO()
                 await bucket.download_to_stream(gridfs_id, file_stream)
                 file_data = file_stream.getvalue()
-                
+
                 headers = {
                     'Content-Length': str(file_size),
                     'Accept-Ranges': 'bytes',
                     'Content-Type': content_type,
                 }
-                
+
                 return StreamingResponse(
                     io.BytesIO(file_data),
                     media_type=content_type,
                     headers=headers
                 )
-                
+
         except Exception as stream_error:
             print(f"Error streaming file {file_id}: {str(stream_error)}")
             raise HTTPException(status_code=500, detail=f"Streaming error: {str(stream_error)}")
-        
+
     except HTTPException:
         raise
     except Exception as e:
