@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from app.config.database import init_db, close_db
@@ -26,6 +27,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Error during shutdown: {e}")
 
+
 app = FastAPI(
     title="AudioNorm API",
     description="Audio Normalization API with user authentication and email notifications",
@@ -33,6 +35,11 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan
+)
+# Add session middleware for OAuth/session support
+app.add_middleware(
+    SessionMiddleware,
+    secret_key="CHANGE_THIS_TO_A_RANDOM_SECRET_KEY_32CHARS"
 )
 
 # Configure CORS for production

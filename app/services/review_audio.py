@@ -1,3 +1,39 @@
+
+# Stream a preview of the original (uploaded) file for the owner
+
+PREVIEW_DURATION_SECONDS = 30
+
+# Stream a preview of the original (uploaded) file for the owner
+async def stream_original_audio_preview(db, file_id: str, user_id: str, duration: int = PREVIEW_DURATION_SECONDS):
+	"""
+	Stream a preview (first N seconds) of the original uploaded audio file for the owner.
+	"""
+	bucket = AsyncIOMotorGridFSBucket(db)
+	file_doc = await db["audio_files"].find_one({"_id": parse_file_id(file_id)})
+	if not file_doc:
+		return JSONResponse(status_code=404, content={"error": "Original file not found"})
+	if file_doc.get("user_id") != user_id:
+		return JSONResponse(status_code=403, content={"error": "You can only preview your own files"})
+	gridfs_id = file_doc.get("gridfs_id")
+	if not gridfs_id:
+		return JSONResponse(status_code=404, content={"error": "File data not found"})
+	sr = file_doc.get("sample_rate", 48000)
+	channels = file_doc.get("channels", 1)
+	original_filename = file_doc.get("original_filename", "audio.wav").lower()
+	preview_samples = int(sr * duration)
+	preview_bytes = preview_samples * channels * BYTES_PER_SAMPLE
+	grid_out = await bucket.open_download_stream(gridfs_id)
+	grid_out.seek(0)
+	preview_data = await grid_out.read(preview_bytes)
+	headers = {
+		"Content-Type": "audio/wav",
+		"Content-Disposition": f'inline; filename="preview_{original_filename}"'
+	}
+	return StreamingResponse(
+		iter([preview_data]),
+		headers=headers,
+		media_type="audio/wav"
+	)
 import io
 try:
 	import librosa

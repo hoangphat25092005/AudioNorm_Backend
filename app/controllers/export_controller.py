@@ -402,7 +402,7 @@ async def stream_audio_file(file_id: str, request: Request, token: str = None):
                 content_length = byte_end - byte_start + 1
 
                 # Read the requested range
-                await grid_out.seek(byte_start)
+                grid_out.seek(byte_start)
                 chunk_data = await grid_out.read(content_length)
 
                 headers = {

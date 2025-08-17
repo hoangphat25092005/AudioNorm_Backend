@@ -148,7 +148,7 @@ class AuthService:
                 email=google_user.email,
                 auth_provider=AuthProvider.GOOGLE,
                 google_id=google_user.id,
-                profile_picture=google_user.picture
+                profile_picture=str(google_user.picture) if google_user.picture else None
             )
             result = await db.users.insert_one(user.dict())
             user_id = str(result.inserted_id)
@@ -163,7 +163,7 @@ class AuthService:
                     {"$set": {
                         "auth_provider": AuthProvider.GOOGLE,
                         "google_id": google_user.id,
-                        "profile_picture": google_user.picture
+                        "profile_picture": str(google_user.picture) if google_user.picture else None
                     }}
                 )
 
@@ -184,7 +184,7 @@ class AuthService:
                 username=google_user.name,
                 email=google_user.email,
                 created_at=datetime.utcnow(),
-                profile_picture=google_user.picture,
+                profile_picture=str(google_user.picture) if google_user.picture else None,
                 auth_provider=AuthProvider.GOOGLE
             )
         }

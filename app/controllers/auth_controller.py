@@ -54,9 +54,23 @@ async def google_callback(request: Request):
             name=user_info.get('name', user_info['email'].split('@')[0]),
             picture=user_info.get('picture')
         )
-        
+
         # Login or register the Google user
         result = await AuthService.google_auth(google_user)
-        return result
-    
+        # If result is a response with a token, redirect to frontend with token
+        token = None
+        if isinstance(result, dict) and 'access_token' in result:
+            token = result['access_token']
+        elif hasattr(result, 'body') and hasattr(result, 'status_code') and result.status_code == 200:
+            # Try to extract token from response body if possible
+            import json
+            try:
+                body = json.loads(result.body)
+                token = body.get('access_token')
+            except Exception:
+                pass
+        frontend_url = f"http://localhost:3000/?token={token}" if token else "http://localhost:3000/"
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(frontend_url)
+
     raise HTTPException(status_code=400, detail="Failed to get user info from Google")
