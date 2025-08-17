@@ -47,7 +47,7 @@ allowed_origins = [
     "http://localhost:3000",  # React development
     "http://localhost:8000",  # Local FastAPI
     "https://audionorm-backend.onrender.com",  # Production backend
-    "https://audionorm-frontend.onrender.com",  # Your frontend on Render
+    "https://audionorm-frontend.onrender.com",  # Production frontend
 ]
 
 
@@ -57,7 +57,7 @@ if os.getenv("ENVIRONMENT") == "production":
         CORSMiddleware,
         allow_origins=allowed_origins,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_methods=["*"],
         allow_headers=["*"],
     )
 else:
