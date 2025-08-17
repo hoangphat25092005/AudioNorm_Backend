@@ -1,10 +1,17 @@
+from app.config.jwt_dependency import get_current_user
 """
 Audio Files Controller
 Handles file listing, metadata, and file management operations
 """
 from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi import status
 from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+from bson.errors import InvalidId
+from app.services.audio_service import audio_service
+
+# Router must be defined before any usage
+from fastapi import APIRouter
 from bson import ObjectId
 from datetime import datetime, timedelta
 from typing import Optional, List
@@ -29,7 +36,75 @@ def sanitize_filename_for_http(filename: str) -> str:
         # Fallback: remove non-ASCII characters
         return re.sub(r'[^\x00-\x7F]+', '_', filename)
 
+
 router = APIRouter(tags=["Files"])
+@router.delete("/files/original/{file_id}", status_code=204)
+async def delete_original_file(file_id: str, current_user_id: str = Depends(get_current_user)):
+    """
+    Delete an original (uploaded) audio file and its GridFS data.
+    """
+    try:
+        db = await get_db()
+        # Validate ObjectId
+        try:
+            obj_id = ObjectId(file_id)
+        except InvalidId:
+            raise HTTPException(status_code=400, detail="Invalid file ID")
+        file_doc = await db["audio_files"].find_one({"_id": obj_id})
+        if not file_doc:
+            raise HTTPException(status_code=404, detail="File not found")
+        if file_doc.get("user_id") != current_user_id:
+            raise HTTPException(status_code=403, detail="You can only delete your own files")
+        # Delete from GridFS if present
+        gridfs_id = file_doc.get("gridfs_id")
+        if gridfs_id:
+            bucket = AsyncIOMotorGridFSBucket(db)
+            try:
+                await bucket.delete(ObjectId(gridfs_id))
+            except Exception as e:
+                print(f"Warning: Could not delete GridFS file: {e}")
+        # Delete from DB
+        await db["audio_files"].delete_one({"_id": obj_id})
+        return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting original file: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete file")
+
+@router.delete("/files/normalized/{file_id}", status_code=204)
+async def delete_normalized_file(file_id: str, current_user_id: str = Depends(get_current_user)):
+    """
+    Delete a normalized audio file and its GridFS data.
+    """
+    try:
+        db = await get_db()
+        # Validate ObjectId
+        try:
+            obj_id = ObjectId(file_id)
+        except InvalidId:
+            raise HTTPException(status_code=400, detail="Invalid file ID")
+        norm_doc = await db["audio_normalizations"].find_one({"_id": obj_id})
+        if not norm_doc:
+            raise HTTPException(status_code=404, detail="Normalized file not found")
+        if norm_doc.get("user_id") != current_user_id:
+            raise HTTPException(status_code=403, detail="You can only delete your own normalized files")
+        # Delete from GridFS if present
+        gridfs_id = norm_doc.get("gridfs_id") or norm_doc.get("file_id")
+        if gridfs_id:
+            bucket = AsyncIOMotorGridFSBucket(db)
+            try:
+                await bucket.delete(ObjectId(gridfs_id))
+            except Exception as e:
+                print(f"Warning: Could not delete GridFS normalized file: {e}")
+        # Delete from DB
+        await db["audio_normalizations"].delete_one({"_id": obj_id})
+        return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting normalized file: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete normalized file")
 
 @router.get("/files")
 async def get_user_files(

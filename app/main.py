@@ -51,24 +51,15 @@ allowed_origins = [
 ]
 
 
-# In production, be more restrictive with CORS
-if os.getenv("ENVIRONMENT") == "production":
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=allowed_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-else:
-    # Development - allow React frontend
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["http://localhost:3000"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+
+# Always allow both localhost and production frontends/backends for CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Error handling
 @app.exception_handler(HTTPException)
