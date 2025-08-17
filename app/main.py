@@ -47,7 +47,8 @@ allowed_origins = [
     "http://localhost:3000",  # React development
     "http://localhost:8000",  # Local FastAPI
     "https://audionorm-backend.onrender.com",  # Production backend
-    "https://audionorm-frontend.onrender.com",  # Production frontend
+    "https://audionorm-frontend.onrender.com",
+    "https://audionormbackend.vercel.app"  # Production frontend
 ]
 
 
