@@ -46,7 +46,6 @@ app.add_middleware(
 allowed_origins = [
     "http://localhost:3000",  # React development
     "https://audionorm-frontend.onrender.com",
-    "https://audionorm-backend-production-60a1.up.railway.app",
     
 ]
 
