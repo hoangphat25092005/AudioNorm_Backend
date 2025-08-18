@@ -49,6 +49,7 @@ allowed_origins = [
     "https://audionorm-backend.onrender.com",  # Production backend
     "https://audionorm-frontend.onrender.com",
     "https://stunning-nationally-monitor.ngrok-free.app",
+    "https://audionorm-backend-production-60a1.up.railway.app",
     
 ]
 
@@ -58,7 +59,7 @@ allowed_origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

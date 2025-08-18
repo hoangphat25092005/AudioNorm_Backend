@@ -70,8 +70,9 @@ async def normalize_uploaded_file(file_id: str, target_lufs: float = -23.0, requ
             import io
             original_filename = file_doc.get("filename", "unknown.mp3")
             file_extension = original_filename.split(".")[-1].lower() if "." in original_filename else "mp3"
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}")
-            temp_file_path = temp_file.name
+            import os
+            fd, temp_file_path = tempfile.mkstemp(suffix=f".{file_extension}")
+            os.close(fd)
             # Download directly to file
             with open(temp_file_path, "wb") as f:
                 await bucket.download_to_stream(gridfs_id, f)

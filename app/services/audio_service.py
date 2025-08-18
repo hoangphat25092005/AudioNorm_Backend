@@ -40,6 +40,22 @@ except ImportError as e:
     print("Missing dependencies. Please install: pip install torch librosa soundfile pyloudnorm")
 
 class AudioService:
+    def _safe_unlink(self, path, max_retries=5, delay=0.2):
+        """Try to unlink a file with retries to handle Windows file lock timing issues."""
+        import time
+        for attempt in range(max_retries):
+            try:
+                if path and os.path.exists(path):
+                    os.unlink(path)
+                return
+            except PermissionError as e:
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+                else:
+                    print(f"Warning: Could not delete temp file {path} after {max_retries} attempts: {e}")
+            except Exception as e:
+                print(f"Warning: Unexpected error deleting temp file {path}: {e}")
+                return
     def __init__(self):
         self.db = None
         self.collection: Optional[AsyncIOMotorCollection] = None
@@ -312,40 +328,47 @@ class AudioService:
         """Analyze audio file properties"""
         if not AUDIO_DEPS_AVAILABLE:
             raise HTTPException(status_code=503, detail="Audio processing dependencies not available")
-        
-        with tempfile.NamedTemporaryFile(suffix=f".{file.filename.split('.')[-1]}", delete=False) as temp_input:
-            temp_input.write(await file.read())
-            temp_input_path = temp_input.name
-        
+
+        import tempfile, os
+        file_ext = file.filename.split('.')[-1]
+        fd, temp_input_path = tempfile.mkstemp(suffix=f'.{file_ext}')
+        try:
+            with os.fdopen(fd, 'wb') as tmp:
+                tmp.write(await file.read())
+        except Exception as e:
+            os.close(fd)
+            raise e
+
         temp_wav_path = None
-        
+
         try:
             # Handle different audio formats
             file_ext = file.filename.split('.')[-1].lower()
-            
+
             if file_ext == 'wav':
                 process_path = temp_input_path
             else:
-                temp_wav_path = tempfile.mktemp(suffix=".wav")
+                fd_wav, temp_wav_path = tempfile.mkstemp(suffix='.wav')
+                os.close(fd_wav)  # Only need the filename
                 if not self.convert_to_wav_ffmpeg(temp_input_path, temp_wav_path):
                     raise HTTPException(status_code=400, detail=f"Failed to convert {file_ext} to WAV")
                 process_path = temp_wav_path
-            
+
             # Load and analyze audio
             audio, sr = librosa.load(process_path, sr=None, mono=False)
-            
+
             # Convert to mono for analysis
             if audio.ndim > 1:
                 audio_mono = np.mean(audio, axis=0)
             else:
                 audio_mono = audio
-            
+
             # Calculate properties
             duration = len(audio_mono) / sr
             lufs = self.measure_lufs(audio_mono, sr)
             rms = np.sqrt(np.mean(audio_mono**2))
             peak = np.max(np.abs(audio_mono))
-            
+
             return AudioAnalysisResult(
                 filename=file.filename,
                 duration_seconds=round(duration, 2),
@@ -357,19 +380,14 @@ class AudioService:
                 peak_db=round(20 * np.log10(peak) if peak > 0 else -float('inf'), 2),
                 format=file_ext.upper()
             )
-            
+
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
-        
+
         finally:
             # Cleanup
-            try:
-                if os.path.exists(temp_input_path):
-                    os.unlink(temp_input_path)
-                if temp_wav_path and os.path.exists(temp_wav_path):
-                    os.unlink(temp_wav_path)
-            except:
-                pass
+            self._safe_unlink(temp_input_path)
+            self._safe_unlink(temp_wav_path)
 
     async def normalize_audio_file(
         self,
@@ -428,10 +446,12 @@ class AudioService:
 
             # If still not loaded, fallback to FFmpeg conversion (requires temp file)
             if not load_success:
-                with tempfile.NamedTemporaryFile(suffix=f".{file_ext}", delete=False) as temp_input:
-                    temp_input.write(content)
-                    temp_input_path = temp_input.name
-                temp_wav_path = tempfile.mktemp(suffix=".wav")
+                import tempfile, os
+                fd, temp_input_path = tempfile.mkstemp(suffix=f'.{file_ext}')
+                with os.fdopen(fd, 'wb') as tmp:
+                    tmp.write(content)
+                fd_wav, temp_wav_path = tempfile.mkstemp(suffix='.wav')
+                os.close(fd_wav)
                 if self.convert_to_wav_ffmpeg(temp_input_path, temp_wav_path):
                     try:
                         audio, sr = sf.read(temp_wav_path, always_2d=False)
@@ -473,7 +493,8 @@ class AudioService:
             final_peak = np.max(np.abs(normalized_audio))
 
             # Save normalized audio to temp file for GridFS upload
-            temp_output_path = tempfile.mktemp(suffix=".wav")
+            fd_out, temp_output_path = tempfile.mkstemp(suffix='.wav')
+            os.close(fd_out)
             sf.write(temp_output_path, normalized_audio, sr)
 
             # Calculate processing time
@@ -489,6 +510,7 @@ class AudioService:
             bucket = AsyncIOMotorGridFSBucket(db)
             with open(temp_output_path, 'rb') as f:
                 normalized_audio_data = f.read()
+            # File is closed after exiting 'with' block, safe to delete later
             gridfs_id = await bucket.upload_from_stream(
                 normalized_filename,
                 normalized_audio_data,
@@ -544,13 +566,9 @@ class AudioService:
             print(f"SERVICE ERROR: {e}")
             raise HTTPException(status_code=500, detail=f"Normalization failed: {str(e)}")
         finally:
-            # Always clean up temp files
-            for path in [temp_input_path, temp_wav_path, temp_output_path]:
-                try:
-                    if path and os.path.exists(path):
-                        os.unlink(path)
-                except Exception as cleanup_error:
-                    print(f"Warning: Cleanup failed: {cleanup_error}")
+            # Always clean up temp files, but do NOT delete temp_output_path (returned to caller)
+            self._safe_unlink(temp_input_path)
+            self._safe_unlink(temp_wav_path)
 
     async def get_normalization_history(self, user_id: Optional[str] = None, limit: int = 50) -> List[AudioNormalizationResult]:
         """Get normalization history for user or all (if admin)"""
