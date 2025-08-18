@@ -39,7 +39,7 @@ app = FastAPI(
 # Add session middleware for OAuth/session support
 app.add_middleware(
     SessionMiddleware,
-    secret_key="CHANGE_THIS_TO_A_RANDOM_SECRET_KEY_32CHARS"
+    secret_key=os.getenv("SECRET_KEY", "changeme-please-set-SECRET_KEY-env-var")
 )
 
 # Configure CORS for production
@@ -48,6 +48,7 @@ allowed_origins = [
     "http://localhost:8000",  # Local FastAPI
     "https://audionorm-backend.onrender.com",  # Production backend
     "https://audionorm-frontend.onrender.com",
+    "https://stunning-nationally-monitor.ngrok-free.app",
     
 ]
 
