@@ -372,81 +372,93 @@ class AudioService:
                 pass
 
     async def normalize_audio_file(
-        self, 
-        file: UploadFile, 
-        target_lufs: float = -23.0, 
+        self,
+        file: UploadFile,
+        target_lufs: float = -23.0,
         user_id: Optional[str] = None,
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         original_file_id: Optional[str] = None
     ) -> tuple[str, AudioNormalizationResult]:
         """
-        Normalize audio file and store result in database
+        Optimized: Normalize audio file and store result in database with reduced file I/O and temp file usage.
         Returns: (output_file_path, normalization_result)
         """
         print(f"SERVICE: Starting normalization - target: {target_lufs} LUFS, file: {file.filename}")
-        
         if not AUDIO_DEPS_AVAILABLE:
             print("SERVICE ERROR: Audio processing dependencies not available")
             raise HTTPException(status_code=503, detail="Audio processing dependencies not available")
-        
+
         start_time = time.time()
-        
-        # Create temporary files
+        content = await file.read()
+        if not content:
+            print("SERVICE ERROR: Uploaded file is empty")
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+        file_ext = file.filename.split('.')[-1].lower()
+        temp_input_path = None
+        temp_wav_path = None
+        temp_output_path = None
         try:
-            with tempfile.NamedTemporaryFile(suffix=f".{file.filename.split('.')[-1]}", delete=False) as temp_input:
-                content = await file.read()
-                if not content:
-                    print("SERVICE ERROR: Uploaded file is empty")
-                    raise HTTPException(status_code=400, detail="Uploaded file is empty")
-                
-                print(f"SERVICE: Read {len(content)} bytes from uploaded file")
-                temp_input.write(content)
-                temp_input_path = temp_input.name
-                
-            print(f"SERVICE: Created temp file at {temp_input_path}")
-        except Exception as e:
-            print(f"SERVICE ERROR: Failed to create temp file: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to process uploaded file: {str(e)}")
-        
-        temp_output_path = tempfile.mktemp(suffix=".wav")
-        
-        try:
-            # Handle different audio formats using librosa directly
-            file_ext = file.filename.split('.')[-1].lower()
-            
-            # Try to load the audio file directly with librosa
-            audio, sr, load_success = self.load_audio_file(temp_input_path)
-            
+            # Try to load audio directly from memory using soundfile (for wav/flac/ogg)
+            audio = None
+            sr = None
+            load_success = False
+            import io
+            try:
+                if file_ext in ["wav", "flac", "ogg"]:
+                    with io.BytesIO(content) as buf:
+                        audio_data, sr = sf.read(buf, always_2d=False)
+                        # Convert to float32 if needed
+                        if audio_data.dtype != np.float32:
+                            audio_data = audio_data.astype(np.float32)
+                        audio = audio_data
+                        load_success = True
+            except Exception as e:
+                print(f"SoundFile in-memory load failed: {e}")
+
+            # If not loaded, fallback to librosa (in-memory)
             if not load_success:
-                # If librosa fails, try FFmpeg conversion as fallback (for WAV files only)
-                if file_ext == 'wav':
-                    print("Direct WAV loading failed, this might be a corrupted file")
-                    raise HTTPException(status_code=400, detail=f"Failed to load {file_ext} file - file might be corrupted")
+                try:
+                    with io.BytesIO(content) as buf:
+                        audio, sr = librosa.load(buf, sr=None, mono=False)
+                        load_success = True
+                except Exception as e:
+                    print(f"Librosa in-memory load failed: {e}")
+
+            # If still not loaded, fallback to FFmpeg conversion (requires temp file)
+            if not load_success:
+                with tempfile.NamedTemporaryFile(suffix=f".{file_ext}", delete=False) as temp_input:
+                    temp_input.write(content)
+                    temp_input_path = temp_input.name
+                temp_wav_path = tempfile.mktemp(suffix=".wav")
+                if self.convert_to_wav_ffmpeg(temp_input_path, temp_wav_path):
+                    try:
+                        audio, sr = sf.read(temp_wav_path, always_2d=False)
+                        if audio.dtype != np.float32:
+                            audio = audio.astype(np.float32)
+                        load_success = True
+                    except Exception as e:
+                        print(f"SoundFile load after FFmpeg failed: {e}")
                 else:
-                    # For non-WAV files, try FFmpeg conversion
-                    print(f"Librosa failed to load {file_ext}, trying FFmpeg conversion...")
-                    temp_wav_path = tempfile.mktemp(suffix=".wav")
-                    if self.convert_to_wav_ffmpeg(temp_input_path, temp_wav_path):
-                        audio, sr, load_success = self.load_audio_file(temp_wav_path)
-                        if not load_success:
-                            raise HTTPException(status_code=400, detail=f"Failed to convert and load {file_ext} file")
-                    else:
-                        raise HTTPException(status_code=400, detail=f"Failed to process {file_ext} file - FFmpeg not available or conversion failed")
-            
+                    raise HTTPException(status_code=400, detail=f"Failed to process {file_ext} file - FFmpeg not available or conversion failed")
+
+            if not load_success or audio is None or sr is None:
+                raise HTTPException(status_code=400, detail=f"Failed to load audio file: {file.filename}")
+
             print(f"Successfully loaded audio: {audio.shape if hasattr(audio, 'shape') else len(audio)} samples at {sr}Hz")
-            
+
             # Ensure mono for processing
-            if audio.ndim > 1:
+            if isinstance(audio, np.ndarray) and audio.ndim > 1:
                 audio_mono = np.mean(audio, axis=0)
             else:
                 audio_mono = audio
-            
+
             # Analyze original audio
             original_lufs = self.measure_lufs(audio_mono, sr)
             original_rms = np.sqrt(np.mean(audio_mono**2))
             original_peak = np.max(np.abs(audio_mono))
-            
+
             # Use CNN DL model for normalization
             if self.model is not None:
                 normalized_audio = self.normalize_audio_dl(audio_mono, sr, target_lufs)
@@ -454,32 +466,29 @@ class AudioService:
                 used_dl = True
             else:
                 raise HTTPException(status_code=503, detail="CNN DL model not available - please ensure norm_cnn.pth exists")
-            
+
             # Analyze normalized audio
             final_lufs = self.measure_lufs(normalized_audio, sr)
             final_rms = np.sqrt(np.mean(normalized_audio**2))
             final_peak = np.max(np.abs(normalized_audio))
-            
-            # Save normalized audio to temp file
+
+            # Save normalized audio to temp file for GridFS upload
+            temp_output_path = tempfile.mktemp(suffix=".wav")
             sf.write(temp_output_path, normalized_audio, sr)
-            
+
             # Calculate processing time
             processing_time = time.time() - start_time
-            
+
             # Generate unique file ID for storage
             file_id = str(uuid.uuid4())
             normalized_filename = f"normalized_{file_id}_{file.filename.split('.')[0]}.wav"
-            
-            # Store normalized file in GridFS instead of local storage
+
+            # Store normalized file in GridFS
             from motor.motor_asyncio import AsyncIOMotorGridFSBucket
             db = await get_db()
             bucket = AsyncIOMotorGridFSBucket(db)
-            
-            # Read the normalized audio data
             with open(temp_output_path, 'rb') as f:
                 normalized_audio_data = f.read()
-            
-            # Store in GridFS
             gridfs_id = await bucket.upload_from_stream(
                 normalized_filename,
                 normalized_audio_data,
@@ -492,7 +501,7 @@ class AudioService:
                     "created_at": datetime.utcnow()
                 }
             )
-            
+
             # Create normalization result
             result = AudioNormalizationResult(
                 user_id=user_id,
@@ -502,7 +511,7 @@ class AudioService:
                 file_size_bytes=len(content),
                 duration_seconds=round(len(audio_mono) / sr, 2),
                 sample_rate=sr,
-                channels=audio.ndim if audio.ndim <= 2 else 2,
+                channels=audio.shape[0] if isinstance(audio, np.ndarray) and audio.ndim == 2 else 1,
                 original_lufs=round(original_lufs, 2) if original_lufs != float('-inf') else None,
                 target_lufs=target_lufs,
                 final_lufs=round(final_lufs, 2) if final_lufs != float('-inf') else None,
@@ -515,49 +524,33 @@ class AudioService:
                 used_dl_model=used_dl,
                 ip_address=ip_address,
                 user_agent=user_agent,
-                # GridFS storage information
-                storage_path=None,  # No longer using file system storage
-                file_id=str(gridfs_id),  # Store GridFS ID instead
+                storage_path=None,
+                file_id=str(gridfs_id),
                 is_stored=True
             )
-            
+
             # Store in database
             collection = await self._get_collection()
-            result_dict = result.model_dump(by_alias=True, exclude={'id'})  # Exclude id since it will be auto-generated
-            
-            # Add GridFS and original file references
+            result_dict = result.model_dump(by_alias=True, exclude={'id'})
             result_dict["gridfs_id"] = gridfs_id
             if original_file_id:
                 result_dict["original_file_id"] = original_file_id
-                
             insert_result = await collection.insert_one(result_dict)
             result.id = insert_result.inserted_id
-            
+
             return temp_output_path, result
-            
+
         except Exception as e:
-            # Cleanup on error
-            try:
-                if os.path.exists(temp_input_path):
-                    os.unlink(temp_input_path)
-                if temp_wav_path and os.path.exists(temp_wav_path):
-                    os.unlink(temp_wav_path)
-                if os.path.exists(temp_output_path):
-                    os.unlink(temp_output_path)
-            except:
-                pass
+            print(f"SERVICE ERROR: {e}")
             raise HTTPException(status_code=500, detail=f"Normalization failed: {str(e)}")
         finally:
-            # Always clean up temp files, even if there's an exception
-            try:
-                if os.path.exists(temp_input_path):
-                    os.unlink(temp_input_path)
-                if temp_wav_path and os.path.exists(temp_wav_path):
-                    os.unlink(temp_wav_path)
-                if os.path.exists(temp_output_path):
-                    os.unlink(temp_output_path)
-            except Exception as cleanup_error:
-                print(f"Warning: Cleanup failed: {cleanup_error}")
+            # Always clean up temp files
+            for path in [temp_input_path, temp_wav_path, temp_output_path]:
+                try:
+                    if path and os.path.exists(path):
+                        os.unlink(path)
+                except Exception as cleanup_error:
+                    print(f"Warning: Cleanup failed: {cleanup_error}")
 
     async def get_normalization_history(self, user_id: Optional[str] = None, limit: int = 50) -> List[AudioNormalizationResult]:
         """Get normalization history for user or all (if admin)"""
