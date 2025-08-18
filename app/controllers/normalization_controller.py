@@ -65,37 +65,31 @@ async def normalize_uploaded_file(file_id: str, target_lufs: float = -23.0, requ
                 content={"error": "File data not found in storage"}
             )
         
-        # Download the file from GridFS for analysis
+        # Stream the file from GridFS directly to a temp file to avoid loading into memory
         try:
             import io
-            file_stream = io.BytesIO()
-            await bucket.download_to_stream(gridfs_id, file_stream)
-            content = file_stream.getvalue()
+            original_filename = file_doc.get("filename", "unknown.mp3")
+            file_extension = original_filename.split(".")[-1].lower() if "." in original_filename else "mp3"
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}")
+            temp_file_path = temp_file.name
+            # Download directly to file
+            with open(temp_file_path, "wb") as f:
+                await bucket.download_to_stream(gridfs_id, f)
         except Exception as e:
             return JSONResponse(
                 status_code=404,
                 content={"error": f"Could not retrieve file data: {str(e)}"}
             )
-        
-        if not content:
+        # Check if file is empty
+        if os.path.getsize(temp_file_path) == 0:
+            os.unlink(temp_file_path)
             return JSONResponse(
                 status_code=400,
                 content={"error": "File content is empty"}
             )
-        
         # Get client info
         client_host = request.client.host if request and request.client else "unknown"
         user_agent = request.headers.get("user-agent", "unknown") if request else "unknown"
-        
-        # Get original filename
-        original_filename = file_doc.get("filename", "unknown.mp3")
-        
-        # Create temporary file for processing
-        file_extension = original_filename.split(".")[-1].lower() if "." in original_filename else "mp3"
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as temp_file:
-            temp_file.write(content)
-            temp_file_path = temp_file.name
         
         # Use audio service for normalization
         try:
@@ -119,21 +113,20 @@ async def normalize_uploaded_file(file_id: str, target_lufs: float = -23.0, requ
         
         # Use the service to analyze the file
         try:
-            # For uploaded files, we need to create a proper UploadFile-like object
+            # Create a file-like object for the temp file
             class MockUploadFile:
-                def __init__(self, filename, content):
+                def __init__(self, filename, file_path):
                     self.filename = filename
-                    self.content = content
-                    self._read_position = 0
-                
+                    self.file_path = file_path
+                    self.file = open(file_path, "rb")
                 async def read(self):
-                    return self.content
-                
+                    self.file.seek(0)
+                    return self.file.read()
                 def seek(self, position):
-                    self._read_position = position
-            
-            mock_file = MockUploadFile(original_filename, content)
-            
+                    self.file.seek(position)
+                def close(self):
+                    self.file.close()
+            mock_file = MockUploadFile(original_filename, temp_file_path)
             # Process and store in database
             temp_output_path, result = await service_to_use.normalize_audio_file(
                 file=mock_file,
@@ -143,6 +136,7 @@ async def normalize_uploaded_file(file_id: str, target_lufs: float = -23.0, requ
                 user_agent=user_agent,
                 original_file_id=str(file_id)
             )
+            mock_file.close()
             
             # Add reference to original uploaded file
             result.original_upload_id = str(file_id)
