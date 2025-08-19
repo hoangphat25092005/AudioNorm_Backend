@@ -7,11 +7,6 @@ from app.config.database import init_db, close_db
 from app.controllers import auth_controller, feedback_controller, user_controller
 from app.controllers import status_controller, upload_controller, normalization_controller, export_controller, files_controller
 import os
-import uvicorn
-from app.main import app
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
