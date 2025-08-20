@@ -35,11 +35,18 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan
 )
+
 # Add session middleware for OAuth/session support
 app.add_middleware(
     SessionMiddleware,
     secret_key=os.getenv("SECRET_KEY", "changeme-please-set-SECRET_KEY-env-var")
 )
+
+# --- Add main block for Uvicorn with dynamic port ---
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("app.main:app", host="0.0.0.0", port=port, reload=True)
 
 # Configure CORS for production
 allowed_origins = [
