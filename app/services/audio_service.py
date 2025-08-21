@@ -329,7 +329,7 @@ class AudioService:
         if not AUDIO_DEPS_AVAILABLE:
             raise HTTPException(status_code=503, detail="Audio processing dependencies not available")
 
-        import tempfile, os
+
         file_ext = file.filename.split('.')[-1]
         fd, temp_input_path = tempfile.mkstemp(suffix=f'.{file_ext}')
         try:
@@ -446,7 +446,6 @@ class AudioService:
 
             # If still not loaded, fallback to FFmpeg conversion (requires temp file)
             if not load_success:
-                import tempfile, os
                 fd, temp_input_path = tempfile.mkstemp(suffix=f'.{file_ext}')
                 with os.fdopen(fd, 'wb') as tmp:
                     tmp.write(content)
